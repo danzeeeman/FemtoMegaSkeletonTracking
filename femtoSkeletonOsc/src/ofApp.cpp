@@ -104,6 +104,7 @@ void ofApp::setup() {
     params.add( cameraPort.set( "Camera port (all)", 8090, 1, 65535 ));
     params.add( colorWidth.set( "Colour width", 1280, 320, 3840 ));
     params.add( colorHeight.set( "Colour height", 720, 240, 2160 ));
+    params.add( floorBelow.set( "Floor below camera 0 (m)", 1.5f, 0.f, 5.f ));
 
     // everything that is kept goes in and out of one file
     mAllParams.setName( "FemtoSkeletonOsc" );
@@ -122,6 +123,17 @@ void ofApp::setup() {
     applyOsc();
 
     mAutoQuitSec = ofToFloat( ofGetEnv( "TRACKER_QUIT_AFTER" ));
+    mDemo = ofGetEnv( "FEMTO_DEMO" ) != "";
+    if( mDemo ) {
+        // two stand-in cameras, calibrated, watching someone walk about
+        for( int i = 0; i < 2; i++ ) {
+            mCams[i]->fake = true;
+            mCams[i]->K.width = 1280; mCams[i]->K.height = 720; mCams[i]->K.fx = mCams[i]->K.fy = 900.f;
+            mCams[i]->leveled = true;
+        }
+        mCams[1]->toRef = glm::translate( glm::mat4( 1.f ), glm::vec3( 2.4f, 0.f, 4.2f )) * glm::rotate( glm::mat4( 1.f ), glm::radians( 150.f ), glm::vec3( 0.f, 1.f, 0.f ));
+        mCams[1]->calibrated = true;
+    }
 }
 
 //--------------------------------------------------------------
@@ -272,6 +284,7 @@ void ofApp::update() {
         tany |= cam.newBodies;
     }
 
+    if( mDemo ) { updateDemo(); tany = true; }
     for( int i = 1; i < kMaxCameras; i++ ) if( mCams[i]->collecting && mCams[i]->newBodies ) collectCalibration( *mCams[i] );
 
     if( !tany ) return;
@@ -280,7 +293,7 @@ void ofApp::update() {
     std::vector< SkeletonFusion::Detection > tdets;
     for( auto& c : mCams ) {
         const Camera& cam = *c;
-        if( !cam.device.isOpen() || ( cam.index > 0 && !cam.calibrated )) continue;
+        if( !cam.active() || ( cam.index > 0 && !cam.calibrated )) continue;
         if( tnow - cam.bodiesTime > 0.3 ) continue;
         for( auto& b : cam.bodies ) {
             SkeletonFusion::Detection td;
@@ -302,6 +315,42 @@ void ofApp::update() {
             mSkeleton.send( tb );
             mBodiesSent++;
         }
+    }
+}
+
+//--------------------------------------------------------------
+// FEMTO_DEMO: someone walks a loop and waves, seen by two stand-in cameras, each with a little joint noise, as
+// if both were calibrated. For looking at the 3D view without cameras.
+void ofApp::updateDemo() {
+    using F = FemtoSkeleton;
+    static std::mt19937 trng( 3 );
+    std::normal_distribution< float > tnoise( 0.f, 0.012f );
+    const float tt = ofGetElapsedTimef();
+    const glm::vec3 thip( 0.9f * std::cos( tt * 0.5f ), floorBelow - 0.95f, 2.6f + 0.7f * std::sin( tt * 0.5f ));
+    const float twave = std::sin( tt * 4.f );
+    // joints, relative to the hip: x across, `up` metres above it
+    struct J { int joint; float x, up, z; };
+    const J tj[] = {
+        { F::SPINE_BASE, 0, 0, 0 }, { F::SPINE_MID, 0, 0.25f, 0 }, { F::SPINE_SHOULDER, 0, 0.5f, 0 }, { F::NECK, 0, 0.6f, 0 }, { F::HEAD, 0, 0.78f, 0 },
+        { F::SHOULDER_LEFT, -0.18f, 0.5f, 0 }, { F::ELBOW_LEFT, -0.24f, 0.25f, 0 }, { F::WRIST_LEFT, -0.22f, 0.03f, 0.05f }, { F::HAND_LEFT, -0.22f, -0.03f, 0.05f },
+        { F::SHOULDER_RIGHT, 0.18f, 0.5f, 0 }, { F::ELBOW_RIGHT, 0.3f, 0.6f, 0 }, { F::WRIST_RIGHT, 0.32f + 0.08f * twave, 0.85f, 0 }, { F::HAND_RIGHT, 0.33f + 0.1f * twave, 0.93f, 0 },
+        { F::HIP_LEFT, -0.1f, 0, 0 }, { F::KNEE_LEFT, -0.1f, -0.45f, 0 }, { F::ANKLE_LEFT, -0.1f, -0.88f, 0 }, { F::FOOT_LEFT, -0.1f, -0.93f, 0.1f },
+        { F::HIP_RIGHT, 0.1f, 0, 0 }, { F::KNEE_RIGHT, 0.1f, -0.45f, 0 }, { F::ANKLE_RIGHT, 0.1f, -0.88f, 0 }, { F::FOOT_RIGHT, 0.1f, -0.93f, 0.1f },
+    };
+    for( int i = 0; i < 2; i++ ) {
+        Camera& cam = *mCams[i];
+        const glm::mat4 tinv = glm::inverse( cam.toRef );
+        FemtoSkeleton::Body tb;
+        tb.id = 5;
+        for( auto& j : tj ) {
+            glm::vec3 tp = thip + glm::vec3( j.x, -j.up, j.z );
+            tp = glm::vec3( tinv * glm::vec4( tp, 1.f )) + glm::vec3( tnoise( trng ), tnoise( trng ), tnoise( trng ));
+            tb.cam[j.joint] = ofVec3f( tp.x, tp.y, tp.z );
+            tb.seen[j.joint] = true;
+        }
+        cam.bodies.assign( 1, tb );
+        cam.bodiesTime = ofGetElapsedTimef();
+        cam.newBodies = true;
     }
 }
 
@@ -333,6 +382,7 @@ void ofApp::updateCamera( Camera& aCam ) {
         aCam.rollDeg = glm::degrees( std::atan2( tup.x, -tup.y ));
         if( levelMatrix( tup, tlevel )) {
             mSkeleton.setLevelMatrix( tlevel );
+            aCam.levelM = tlevel;
             aCam.leveled = true;
         }
     }
@@ -370,10 +420,13 @@ void ofApp::draw() {
     std::vector< Camera* > tshown;
     for( auto& c : mCams ) if( c->enabled && c->tex.isAllocated() ) tshown.push_back( c.get() );
 
-    // the right of the window: each camera with its poses over it, and a plan view of everyone
-    ofRectangle tarea( 450, 10, ofGetWidth() - 460, ofGetHeight() - 20 );
-    int tcols = tshown.size() <= 1 ? 1 : 2;
-    int trows = std::max( 1, (int)( ( tshown.size() + tcols - 1 ) / tcols ));
+    // the right of the window: each camera with its poses over it, in a column, and the joined space in 3D
+    ofRectangle tfull( 450, 10, ofGetWidth() - 460, ofGetHeight() - 20 );
+    const bool tcams = !tshown.empty();
+    ofRectangle tarea( tfull.x, tfull.y, tcams ? tfull.width * 0.36f : 0.f, tfull.height );
+    mViewRect = ofRectangle( tarea.getRight() + ( tcams ? 6.f : 0.f ), tfull.y, tfull.getRight() - tarea.getRight() - ( tcams ? 6.f : 0.f ), tfull.height );
+    int tcols = 1;
+    int trows = std::max( 1, (int)tshown.size() );
     float tw = tarea.width / tcols, th = tarea.height / trows;
     for( size_t i = 0; i < tshown.size(); i++ ) {
         Camera& cam = *tshown[i];
@@ -388,40 +441,7 @@ void ofApp::draw() {
         ofDrawBitmapString( "camera " + ofToString( cam.index ) + ( cam.index > 0 && !cam.calibrated ? "  (not calibrated)" : "" ), timg.x + 6, timg.y + 14 );
     }
 
-    // plan view, in camera 0's frame: x across, z away from camera 0, 6 m deep. Each camera's own detections in its
-    // colour, the merged people in white rings, the cameras as triangles: after calibration they lie on each other.
-    float tpw = 300, tph = 300;
-    ofRectangle tplan( tarea.getRight() - tpw - 6, tarea.getBottom() - tph - 6, tpw, tph );
-    ofSetColor( 0, 190 );
-    ofDrawRectangle( tplan );
-    ofSetColor( 255, 60 );
-    ofDrawLine( tplan.getCenter().x, tplan.y, tplan.getCenter().x, tplan.getBottom() );
-    const float tscale = tph / 6.f;
-    auto plan = [&]( const glm::vec3& p ) { return glm::vec2( tplan.getCenter().x + p.x * tscale, tplan.y + p.z * tscale ); };
-    for( auto& c : mCams ) {
-        const Camera& cam = *c;
-        if( !cam.device.isOpen() || ( cam.index > 0 && !cam.calibrated )) continue;
-        ofSetColor( kCameraColors[cam.index] );
-        glm::vec2 tc = plan( glm::vec3( cam.toRef * glm::vec4( 0.f, 0.f, 0.f, 1.f )));
-        ofDrawTriangle( tc.x, tc.y - 5, tc.x - 4, tc.y + 3, tc.x + 4, tc.y + 3 );
-        for( auto& b : cam.bodies )
-            for( int j = 0; j < FemtoSkeleton::TOTAL_JOINTS; j++ ) {
-                if( !b.seen[j] ) continue;
-                glm::vec2 tp = plan( glm::vec3( cam.toRef * glm::vec4( vec3Of( b.cam[j] ), 1.f )));
-                ofDrawCircle( tp.x, tp.y, 1.5f );
-            }
-    }
-    for( auto& t : mFusion.tracks() ) {
-        if( ofGetElapsedTimef() - t.lastSeen > 0.5 ) continue;
-        glm::vec3 tc;
-        if( !SkeletonFusion::centreOf( t.body, tc )) continue;
-        glm::vec2 tp = plan( tc );
-        ofNoFill();
-        ofSetColor( 255 );
-        ofDrawCircle( tp.x, tp.y, 7.f );
-        ofFill();
-        ofDrawBitmapString( ofToString( t.id ), tp.x + 9, tp.y + 4 );
-    }
+    draw3d( mViewRect );
 
     gui.begin();
     guiSettings.windowPos = ofVec2f( 10, 10 );
@@ -435,6 +455,8 @@ void ofApp::draw() {
     ofxImGui::AddGroup( params, guiSettings );
     if( ImGui::Button( "Apply OSC address" )) applyOsc();
     ImGui::SameLine();
+    if( ImGui::Button( "Floor from feet" )) floorFromFeet();
+    ImGui::SameLine();
     if( ImGui::Button( "Save settings" )) saveSettings();
     ImGui::Separator();
     for( auto& c : mCams ) drawCameraPanel( *c );
@@ -447,6 +469,15 @@ void ofApp::draw() {
     }
     ofxImGui::EndWindow( guiSettings );
     gui.end();
+
+    // FEMTO_SHOT=<file.png>: save what is on screen after a few seconds, then quit
+    static const string tshot = ofGetEnv( "FEMTO_SHOT" );
+    if( !tshot.empty() && ofGetElapsedTimef() > 6.f ) {
+        ofImage timg;
+        timg.grabScreen( 0, 0, ofGetWidth(), ofGetHeight() );
+        timg.save( tshot );
+        ofExit( 0 );
+    }
 }
 
 //--------------------------------------------------------------
@@ -507,6 +538,139 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
         }
     }
     ImGui::PopID();
+}
+
+
+//--------------------------------------------------------------
+// camera 0's levelled frame (x right, y down, z forward) to the display's (x right, y away, z up)
+static glm::vec3 displayOf( const glm::vec3& p ) { return glm::vec3( p.x, p.z, -p.y ); }
+
+void ofApp::floorFromFeet() {
+    float tmax = -1e9f;
+    for( auto& t : mFusion.tracks() ) {
+        if( ofGetElapsedTimef() - t.lastSeen > 0.5 ) continue;
+        for( int j : { (int)FemtoSkeleton::FOOT_LEFT, (int)FemtoSkeleton::FOOT_RIGHT, (int)FemtoSkeleton::ANKLE_LEFT, (int)FemtoSkeleton::ANKLE_RIGHT } )
+            if( t.body.seen[j] ) tmax = std::max( tmax, t.body.cam[j].y );
+    }
+    if( tmax > 0.f ) floorBelow = tmax;
+}
+
+//--------------------------------------------------------------
+void ofApp::draw3d( const ofRectangle& aView ) {
+    if( aView.width < 20 || aView.height < 20 ) return;
+    ofSetColor( 14, 15, 20 );
+    ofDrawRectangle( aView );
+
+    const float taz = glm::radians( mViewAz ), tel = glm::radians( mViewEl );
+    mView.setNearClip( 0.05f );
+    mView.setFarClip( 100.f );
+    mView.setFov( 45.f );
+    mView.setPosition( mViewTarget + mViewDist * glm::vec3( std::cos( tel ) * std::cos( taz ), std::cos( tel ) * std::sin( taz ), std::sin( tel )));
+    mView.lookAt( mViewTarget, glm::vec3( 0.f, 0.f, 1.f ));
+
+    // the bones of a body, as pairs of joints
+    using F = FemtoSkeleton;
+    static const int tbones[][2] = {
+        { F::SPINE_BASE, F::SPINE_MID }, { F::SPINE_MID, F::SPINE_SHOULDER }, { F::SPINE_SHOULDER, F::NECK }, { F::NECK, F::HEAD },
+        { F::SPINE_SHOULDER, F::SHOULDER_LEFT }, { F::SHOULDER_LEFT, F::ELBOW_LEFT }, { F::ELBOW_LEFT, F::WRIST_LEFT }, { F::WRIST_LEFT, F::HAND_LEFT },
+        { F::SPINE_SHOULDER, F::SHOULDER_RIGHT }, { F::SHOULDER_RIGHT, F::ELBOW_RIGHT }, { F::ELBOW_RIGHT, F::WRIST_RIGHT }, { F::WRIST_RIGHT, F::HAND_RIGHT },
+        { F::SPINE_BASE, F::HIP_LEFT }, { F::HIP_LEFT, F::KNEE_LEFT }, { F::KNEE_LEFT, F::ANKLE_LEFT }, { F::ANKLE_LEFT, F::FOOT_LEFT },
+        { F::SPINE_BASE, F::HIP_RIGHT }, { F::HIP_RIGHT, F::KNEE_RIGHT }, { F::KNEE_RIGHT, F::ANKLE_RIGHT }, { F::ANKLE_RIGHT, F::FOOT_RIGHT },
+    };
+    auto place = [&]( const FemtoSkeleton::Body& b, const glm::mat4& aToRef, int j ) {
+        return displayOf( glm::vec3( aToRef * glm::vec4( vec3Of( b.cam[j] ), 1.f )));
+    };
+    auto drawBody = [&]( const FemtoSkeleton::Body& b, const glm::mat4& aToRef, float aJointR ) {
+        for( auto& tb : tbones )
+            if( b.seen[tb[0]] && b.seen[tb[1]] ) ofDrawLine( place( b, aToRef, tb[0] ), place( b, aToRef, tb[1] ));
+        for( int j = 0; j < F::TOTAL_JOINTS; j++ )
+            if( b.seen[j] ) ofDrawSphere( place( b, aToRef, j ), aJointR );
+    };
+
+    mView.begin( aView );
+    ofEnableDepthTest();
+    ofDisableLighting();
+
+    // the floor: a grid of 1 m squares, below camera 0
+    const float tfz = -floorBelow;
+    ofSetColor( 60, 64, 80 );
+    for( int i = -6; i <= 6; i++ ) {
+        ofDrawLine( (float)i, -1.f, tfz, (float)i, 11.f, tfz );
+        ofDrawLine( -6.f, i + 5.f, tfz, 6.f, i + 5.f, tfz );
+    }
+    // camera 0's axes: x red, forward green, up blue
+    ofSetLineWidth( 2.f );
+    ofSetColor( 255, 80, 80 );  ofDrawLine( 0.f, 0.f, 0.f, 0.5f, 0.f, 0.f );
+    ofSetColor( 80, 255, 80 );  ofDrawLine( 0.f, 0.f, 0.f, 0.f, 0.5f, 0.f );
+    ofSetColor( 80, 140, 255 ); ofDrawLine( 0.f, 0.f, 0.f, 0.f, 0.f, 0.5f );
+    ofSetLineWidth( 1.f );
+
+    // the cameras: a frustum each, where it is in the joined space, in its own colour
+    for( auto& c : mCams ) {
+        const Camera& cam = *c;
+        if( !cam.active() || ( cam.index > 0 && !cam.calibrated ) || cam.K.fx <= 0.f ) continue;
+        const glm::mat3 tm = cam.leveled ? cam.levelM : glm::mat3( 1.f );
+        auto corner = [&]( float sx, float sy ) {
+            const float td = 0.6f;
+            glm::vec3 p( sx * ( cam.K.width * 0.5f ) / cam.K.fx * td, sy * ( cam.K.height * 0.5f ) / cam.K.fy * td, td );
+            return displayOf( glm::vec3( cam.toRef * glm::vec4( tm * p, 1.f )));
+        };
+        const glm::vec3 to = displayOf( glm::vec3( cam.toRef * glm::vec4( 0.f, 0.f, 0.f, 1.f )));
+        const glm::vec3 tc[4] = { corner( -1.f, -1.f ), corner( 1.f, -1.f ), corner( 1.f, 1.f ), corner( -1.f, 1.f ) };
+        ofSetColor( kCameraColors[cam.index] );
+        for( int k = 0; k < 4; k++ ) {
+            ofDrawLine( to, tc[k] );
+            ofDrawLine( tc[k], tc[( k + 1 ) % 4] );
+        }
+        ofDrawSphere( to, 0.05f );
+    }
+
+    // what each camera sees, thin, in its colour; then the merged people, bold
+    for( auto& c : mCams ) {
+        const Camera& cam = *c;
+        if( !cam.active() || ( cam.index > 0 && !cam.calibrated ) || ofGetElapsedTimef() - cam.bodiesTime > 0.3 ) continue;
+        ofSetColor( kCameraColors[cam.index], 150 );
+        for( auto& b : cam.bodies ) drawBody( b, cam.toRef, 0.012f );
+    }
+    ofSetLineWidth( 3.f );
+    for( auto& t : mFusion.tracks() ) {
+        if( ofGetElapsedTimef() - t.lastSeen > 0.5 ) continue;
+        ofSetColor( ofColor::fromHsb( ( t.id * 53 ) % 255, 90, 255 ));
+        drawBody( t.body, glm::mat4( 1.f ), 0.025f );
+    }
+    ofSetLineWidth( 1.f );
+
+    ofDisableDepthTest();
+    mView.end();
+
+    // ids next to the people
+    for( auto& t : mFusion.tracks() ) {
+        if( ofGetElapsedTimef() - t.lastSeen > 0.5 ) continue;
+        glm::vec3 tc;
+        if( !SkeletonFusion::centreOf( t.body, tc )) continue;
+        glm::vec3 ts = mView.worldToScreen( displayOf( tc ), aView );
+        ofSetColor( 255 );
+        ofDrawBitmapString( "person " + ofToString( t.id ) + ( t.cameras > 1 ? "  (" + ofToString( t.cameras ) + " cameras)" : "" ), ts.x + 10, ts.y );
+    }
+    ofSetColor( 170 );
+    ofDrawBitmapString( "the joined space, in camera 0's frame   drag: orbit   wheel: zoom", aView.x + 8, aView.y + 14 );
+}
+
+//--------------------------------------------------------------
+void ofApp::mousePressed( int x, int y, int ) { mLastMx = x; mLastMy = y; }
+
+void ofApp::mouseDragged( int x, int y, int button ) {
+    if( mViewRect.inside( (float)x, (float)y ) && !ImGui::GetIO().WantCaptureMouse && button == OF_MOUSE_BUTTON_LEFT ) {
+        mViewAz -= ( x - mLastMx ) * 0.4f;
+        mViewEl = glm::clamp( mViewEl + ( y - mLastMy ) * 0.4f, -85.f, 85.f );
+    }
+    mLastMx = x;
+    mLastMy = y;
+}
+
+void ofApp::mouseScrolled( int x, int y, float, float scrollY ) {
+    if( ImGui::GetIO().WantCaptureMouse || !mViewRect.inside( (float)x, (float)y )) return;
+    mViewDist = glm::clamp( mViewDist * std::pow( 0.9f, scrollY ), 0.5f, 40.f );
 }
 
 //--------------------------------------------------------------

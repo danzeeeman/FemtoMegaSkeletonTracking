@@ -46,6 +46,9 @@ public:
     void draw() override;
     void exit() override;
     void keyPressed( int key ) override;
+    void mousePressed( int x, int y, int button ) override;
+    void mouseDragged( int x, int y, int button ) override;
+    void mouseScrolled( int x, int y, float scrollX, float scrollY ) override;
 
 private:
     // One Femto Mega and what is known about it.
@@ -58,6 +61,8 @@ private:
         ofParameter< bool > invertImu;        // the accelerometer reads gravity, not up
 
         ofxOrbbecDevice device;
+        bool fake = false;                      // FEMTO_DEMO: stands in for a camera
+        bool active() const { return fake || device.isOpen(); }
         std::shared_ptr< ofxRtmPoseTracker > tracker;
         std::future< bool > connecting;
         float lastTry = -100.f;
@@ -72,6 +77,7 @@ private:
         double bodiesTime = 0.0;
         bool newBodies = false;                 // the tracker produced something this update
         bool leveled = false;                   // the accelerometer levelled the last bodies
+        glm::mat3 levelM{ 1.f };                // camera frame -> levelled frame, when `leveled`
         float pitchDeg = 0.f, rollDeg = 0.f;    // what the accelerometer says
 
         // where it is relative to camera 0
@@ -91,6 +97,9 @@ private:
     void collectCalibration( Camera& aCam );
     void drawCameraPanel( Camera& aCam );
     void applyOsc();
+    void updateDemo();
+    void draw3d( const ofRectangle& aView );
+    void floorFromFeet();
     void loadSettings();
     void saveSettings();
     void loadCalibration();
@@ -110,6 +119,15 @@ private:
     ofParameter< int > cameraPort;
     ofParameter< int > colorWidth, colorHeight;
 
+    // The joined space in 3D: an orbit camera, Z up. Display axes are x right, y away from camera 0, z up.
+    ofCamera mView;
+    float mViewAz = -110.f, mViewEl = 22.f, mViewDist = 6.f;
+    glm::vec3 mViewTarget{ 0.f, 2.5f, -0.8f };
+    ofRectangle mViewRect;
+    int mLastMx = 0, mLastMy = 0;
+    ofParameter< float > floorBelow;   // how far the floor is below camera 0 (m)
+
+    bool mDemo = false;
     float mAutoQuitSec = 0.f;
     size_t mBodiesSent = 0;
 };
