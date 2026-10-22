@@ -64,6 +64,7 @@ private:
     // what the window edits
     char filePath[512] = "take1.oscrec";   // the take to play (in bin/data); a new recording becomes it
     std::vector<std::string> takes;          // every recording, newest first (paths in bin/data)
+    std::string shotPath;                    // OSCREC_SHOT: a screenshot to save, then quit
     float takesListedAt = -100.f;
     int recPort = 9998;
     bool forward = true;

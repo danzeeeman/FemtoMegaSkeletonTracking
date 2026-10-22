@@ -161,7 +161,8 @@ void ofApp::setup() {
     mDebug = true;    // debug build: once a second, where the skeletons are lost
 #endif
     if( mDemo ) {
-        // two stand-in cameras, calibrated, watching someone walk about
+        // two stand-in cameras, calibrated, watching someone walk about; the real ones in the settings are left be
+        for( auto& c : mCams ) c->enabled = false;
         for( int i = 0; i < 2; i++ ) {
             mCams[i]->fake = true;
             mCams[i]->K.width = 1280; mCams[i]->K.height = 720; mCams[i]->K.fx = mCams[i]->K.fy = 900.f;
@@ -299,6 +300,7 @@ void ofApp::applyOsc() {
 //--------------------------------------------------------------
 // Runs on a worker thread: a camera that is off or on another subnet only gives up after a few seconds.
 void ofApp::connectCamera( Camera& aCam ) {
+    if( mDemo ) return;   // the demo's cameras are stand-ins: no real camera is opened, whatever the settings say
     ofxOrbbecDevice::Options topts;
     topts.colorWidth = colorWidth;
     topts.colorHeight = colorHeight;
@@ -959,7 +961,8 @@ void ofApp::drawCamerasWindow( const ofRectangle& aArea ) {
     string tlist;
     for( auto& f : tfound ) tlist += ( tlist.empty() ? "" : ", " ) + f.serial + ( f.ip.empty() ? " (USB)" : " " + f.ip );
     ImGui::PushStyleColor( ImGuiCol_Text, optheme::im( optheme::textMuted ));
-    if( tfound.empty() ) ImGui::TextWrapped( mFinder.sinceSearch() > 1e8f ? "looking for cameras..." : "no cameras found on the network yet" );
+    if( mDemo ) ImGui::TextWrapped( "demo: two stand-in cameras, calibrated, watching someone walk a loop and wave" );
+    else if( tfound.empty() ) ImGui::TextWrapped( mFinder.sinceSearch() > 1e8f ? "looking for cameras..." : "no cameras found on the network yet" );
     else ImGui::TextWrapped( "found: %s", tlist.c_str() );
     ImGui::PopStyleColor();
 
@@ -1327,7 +1330,7 @@ void ofApp::mouseScrolled( int x, int y, float, float scrollY ) {
 
 //--------------------------------------------------------------
 void ofApp::exit() {
-    saveSettings();
+    if( !mDemo ) saveSettings();   // the demo's stand-in cameras are not the rig's settings
     mFinder.stop();
     mOutRunning = false;
     mOutCv.notify_one();

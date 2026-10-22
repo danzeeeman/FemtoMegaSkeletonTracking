@@ -33,24 +33,7 @@ for entry in "${repos[@]}"; do
     fi
 done
 
-# macOS: the OrbbecSDK_v2 release that ofxOrbbec links (git-ignored in the addon), laid out as its
-# addon_config.mk expects: libs/OrbbecSDK/{include,lib/macos,extensions,OrbbecSDKConfig.xml}.
-if [ "$(uname)" = "Darwin" ]; then
-    sdk="$addons/ofxOrbbec/libs/OrbbecSDK"
-    if [ -e "$sdk/lib/macos/libOrbbecSDK.dylib" ]; then
-        echo "have    OrbbecSDK"
-    elif [ -d "$addons/ofxOrbbec" ]; then
-        echo "fetch   OrbbecSDK"
-        sdkUrl="https://github.com/orbbec/OrbbecSDK_v2/releases/download/v2.10.6/OrbbecSDK_v2.10.6_202609291804_575347c_macOS.tar.gz"
-        tmp="$(mktemp -d)"
-        curl -fsSL -o "$tmp/sdk.tar.gz" "$sdkUrl"
-        tar -xzf "$tmp/sdk.tar.gz" -C "$tmp"
-        src="$(dirname "$(find "$tmp" -name libOrbbecSDK.dylib -path '*/lib/*' | head -1)")/.."
-        mkdir -p "$sdk/lib/macos"
-        cp -R "$src/include" "$sdk/"
-        cp -a "$src/lib/"*.dylib "$sdk/lib/macos/"
-        cp -R "$src/lib/extensions" "$sdk/"
-        cp "$src/lib/OrbbecSDKConfig.xml" "$src/LICENSE.txt" "$sdk/"
-        rm -rf "$tmp"
-    fi
+# macOS: the OrbbecSDK_v2 release that ofxOrbbec links (git-ignored in the addon); its own script fetches it.
+if [ "$(uname)" = "Darwin" ] && [ -x "$addons/ofxOrbbec/scripts/install_sdk.sh" ]; then
+    "$addons/ofxOrbbec/scripts/install_sdk.sh"
 fi

@@ -15,6 +15,16 @@ void ofApp::setup() {
     gui.setup();
     optheme::applyImGui();
     loadSettings();
+    // OSCREC_SHOT=<file.png>: play the newest take, save what is on screen after a few seconds, then quit
+    shotPath = ofGetEnv( "OSCREC_SHOT" );
+    if( !shotPath.empty() ) {
+        listTakes();
+        if( !takes.empty() ) {
+            strncpy( filePath, takes.front().c_str(), sizeof( filePath ) - 1 );
+            loop = true;
+            startPlaying();
+        }
+    }
 }
 
 //--------------------------------------------------------------
@@ -475,10 +485,17 @@ void ofApp::draw() {
 
     ImGui::End();
     gui.end();
+
+    if( !shotPath.empty() && ofGetElapsedTimef() > 6.f ) {
+        ofImage img;
+        img.grabScreen( 0, 0, ofGetWidth(), ofGetHeight() );
+        img.save( shotPath );
+        ofExit( 0 );
+    }
 }
 
 //--------------------------------------------------------------
 void ofApp::exit() {
     stop();
-    saveSettings();
+    if( shotPath.empty() ) saveSettings();   // a screenshot run leaves the settings as they were
 }
