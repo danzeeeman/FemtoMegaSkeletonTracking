@@ -5,10 +5,6 @@ Two openFrameworks apps for tracking people with Orbbec Femto Mega depth cameras
 - **femtoSkeletonOsc** finds people with one or more Femto Megas on the network (up to 16) and sends their skeletons out over OSC.
 - **oscRecPlay** records that OSC and plays it back with its timing, so whatever listens can be worked on without the cameras.
 
-```
-Femto Mega cameras --> femtoSkeletonOsc --OSC--> (oscRecPlay) --> anything that reads OSC
-```
-
 ![femtoSkeletonOsc in demo mode: the Settings and Cameras windows on the left, the tracked person in 3D and from above on the right](docs/femtoSkeletonOsc-demo.png)
 
 ## Contents
