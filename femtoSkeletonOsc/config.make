@@ -149,3 +149,6 @@ OF_ROOT = ../../..
 
 # The OF makefile build skips openssl.xcframework (Xcode links it); curl/ofURLFileLoader need it
 PROJECT_LDFLAGS += $(OF_ROOT)/libs/openssl/lib/macos/openssl.xcframework/macos-arm64_x86_64/openssl.a
+
+# After the build: libonnxruntime (ofxOnnx) goes next to the executable inside the .app (rpath is @executable_path/)
+PROJECT_AFTER += cp -a bin/libonnxruntime*.dylib bin/*.app/Contents/MacOS/ ;
