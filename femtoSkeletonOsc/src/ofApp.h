@@ -128,6 +128,7 @@ private:
     ofParameter< float > floorBelow;   // how far the floor is below camera 0 (m)
 
     bool mDemo = false;
+    bool mDebug = false;               // debug builds only: once a second, where the skeletons are lost
     float mAutoQuitSec = 0.f;
     size_t mBodiesSent = 0;
 };

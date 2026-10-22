@@ -102,8 +102,9 @@ void ofApp::setup() {
     params.add( oscPort.set( "OSC port", 9999, 1, 65535 ));
     params.add( bSend.set( "Send skeletons", true ));
     params.add( cameraPort.set( "Camera port (all)", 8090, 1, 65535 ));
-    params.add( colorWidth.set( "Colour width", 1280, 320, 3840 ));
-    params.add( colorHeight.set( "Colour height", 720, 240, 2160 ));
+    // 0 = the camera's fastest mode (highest frame rate, then the smallest image)
+    params.add( colorWidth.set( "Colour width (0 fastest)", 0, 0, 3840 ));
+    params.add( colorHeight.set( "Colour height (0 fastest)", 0, 0, 2160 ));
     params.add( floorBelow.set( "Floor below camera 0 (m)", 1.5f, 0.f, 5.f ));
 
     // everything that is kept goes in and out of one file
@@ -122,8 +123,15 @@ void ofApp::setup() {
     loadCalibration();
     applyOsc();
 
-    mAutoQuitSec = ofToFloat( ofGetEnv( "TRACKER_QUIT_AFTER" ));
+    // ofToFloat("") leaves its result uninitialised, so only parse when the variable is set
+    const string tquit = ofGetEnv( "TRACKER_QUIT_AFTER" );
+    mAutoQuitSec = tquit.empty() ? 0.f : ofToFloat( tquit );
     mDemo = ofGetEnv( "FEMTO_DEMO" ) != "";
+#ifdef NDEBUG
+    mDebug = false;   // release build: no diagnostics
+#else
+    mDebug = true;    // debug build: once a second, where the skeletons are lost
+#endif
     if( mDemo ) {
         // two stand-in cameras, calibrated, watching someone walk about
         for( int i = 0; i < 2; i++ ) {
@@ -205,8 +213,9 @@ void ofApp::setupTracker( Camera& aCam ) {
     treq.timeoutSeconds = 60 * 15;
     ofxRtmPoseTracker::Settings tsettings;
     ofLogNotice( "FemtoSkeletonOsc" ) << "camera " << aCam.index << ": loading models (downloaded on the first run)";
-    tsettings.detectorModelPath = ofxRtmModelLoader::loadModel( "yolox_m", "models/RtmDetectors",
-        "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_m_8xb8-300e_humanart-c2c7a14a.zip", treq );
+    // the tiny detector: a 416x416 input instead of yolox_m's 640x640, for speed
+    tsettings.detectorModelPath = ofxRtmModelLoader::loadModel( "yolox_tiny", "models/RtmDetectors",
+        "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_tiny_8xb8-300e_humanart-6f3252f9.zip", treq );
     tsettings.poseModelPath = ofxRtmModelLoader::loadModel( "rtmpose-l-384x288", "models/RtmPoseWholeBody",
         "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-l_simcc-ucoco_dw-ucoco_270e-384x288-2438fd99_20230728.zip", treq );
     tsettings.logLevel = OF_LOG_NOTICE;
@@ -231,7 +240,7 @@ void ofApp::connectCamera( Camera& aCam ) {
     ofxOrbbecDevice::Options topts;
     topts.colorWidth = colorWidth;
     topts.colorHeight = colorHeight;
-    topts.colorFps = 30;
+    // fps and the depth mode left at 0: the fastest the camera offers
     topts.alignDepthToColor = true;   // a colour pixel indexes the depth image directly
     topts.netAddress = aCam.ip.get();
     topts.netPort = cameraPort;
@@ -391,10 +400,50 @@ void ofApp::updateCamera( Camera& aCam ) {
     // new poses: build the skeletons
     if( aCam.tracker && aCam.tracker->hasNewData() ) {
         aCam.bodies.clear();
+        // debug-build counts, logged once a second
+        static int sPoses = 0, sFound = 0, sScored = 0, sWithDepth = 0, sBuilt = 0, sUpdates = 0;
+        static float sScoreMax = 0.f, sLastLog = 0.f;
         for( auto& tpose : aCam.tracker->getPoses() ) {
+            if( mDebug && tpose ) {
+                sPoses++;
+                if( tpose->bFoundThisFrame ) {
+                    sFound++;
+                    // the body keypoints build() uses: COCO 5..16
+                    for( int k = 5; k <= 16 && k < (int)tpose->keypoints.size() && k < (int)tpose->scores.size(); k++ ) {
+                        sScoreMax = std::max( sScoreMax, tpose->scores[k] );
+                        if( tpose->scores[k] < mSkeleton.minScore ) continue;
+                        sScored++;
+                        ofVec3f tp;
+                        if( mSkeleton.unproject( ofVec2f( tpose->keypoints[k].x, tpose->keypoints[k].y ), aCam.depth, aCam.K, tp )) sWithDepth++;
+                    }
+                }
+            }
             if( !tpose || !tpose->bFoundThisFrame ) continue;
             FemtoSkeleton::Body tbody;
             if( mSkeleton.build( *tpose, aCam.depth, aCam.K, tbody )) aCam.bodies.push_back( tbody );
+        }
+        if( mDebug ) {
+            sUpdates++;
+            sBuilt += (int)aCam.bodies.size();
+            if( ofGetElapsedTimef() - sLastLog > 1.f ) {
+                size_t tvalid = 0;
+                const size_t tnpix = (size_t)aCam.depth.getWidth() * aCam.depth.getHeight();
+                for( size_t i = 0; i < tnpix; i++ ) if( aCam.depth.getData()[i] ) tvalid++;
+                ofLogNotice( "FemtoSkeletonOsc" ) << "debug cam " << aCam.index << ": " << sUpdates << " tracker updates, " << sPoses << " poses, "
+                    << sFound << " found, body keypoints scored " << sScored << " (max score " << sScoreMax << "), with depth " << sWithDepth
+                    << ", bodies built " << sBuilt << " | depth " << aCam.depth.getWidth() << "x" << aCam.depth.getHeight() << " "
+                    << ( tnpix ? 100.0 * tvalid / tnpix : 0.0 ) << "% valid, colour " << aCam.color.getWidth() << "x" << aCam.color.getHeight()
+                    << ", K " << aCam.K.width << "x" << aCam.K.height;
+                glm::vec3 traw;
+                if( aCam.device.getUp( traw )) {
+                    ofLogNotice( "FemtoSkeletonOsc" ) << "debug cam " << aCam.index << ": accelerometer up (colour camera frame, y down) "
+                        << traw.x << " " << traw.y << " " << traw.z << ( aCam.invertImu ? ", inverted by the setting" : "" )
+                        << ", pitch " << aCam.pitchDeg << " roll " << aCam.rollDeg << ( aCam.leveled ? " levelling" : "" );
+                }
+                sPoses = sFound = sScored = sWithDepth = sBuilt = sUpdates = 0;
+                sScoreMax = 0.f;
+                sLastLog = ofGetElapsedTimef();
+            }
         }
         aCam.bodiesTime = ofGetElapsedTimef();
         aCam.newBodies = true;
