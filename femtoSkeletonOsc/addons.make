@@ -4,3 +4,4 @@ ofxOpenCv
 ofxOrbbec
 ofxOsc
 ofxRtmPoseTracker
+ofxYoloPose

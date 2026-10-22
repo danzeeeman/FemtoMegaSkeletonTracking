@@ -1,0 +1,13 @@
+# what the apps make and download: builds, models, recordings, logs
+*/bin/*
+!*/bin/data/
+*/bin/data/*
+!*/bin/data/.gitkeep
+*/obj/
+
+# made by the projectGenerator
+*/Makefile
+*/Project.xcconfig
+*/*.xcodeproj/
+
+.DS_Store

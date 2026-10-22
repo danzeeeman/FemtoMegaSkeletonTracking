@@ -7,14 +7,16 @@
 // Records the OSC that femtoSkeletonOsc sends (/bodies/<id>/joints/<Joint> ...) and plays it back
 // later, so echoNarcissus can be developed and shown without the cameras.
 //
-// Record: listens on a port and writes every packet, with its arrival time, to a file. To record while
+// Record: listens on a port and writes every packet, with its arrival time, to a file of its own,
+// bin/data/takes/take_<date>_<time>.oscrec, so every take is kept. To record while
 // echoNarcissus is running, point the tracker at this app's port and give a "forward to" address (the
 // app's port 9999): everything is passed on as it arrives.
 //
 // Play: sends the recording to a host and port with its original timing, at a chosen speed, once or
 // in a loop.
 //
-// Packets are kept byte for byte (see Recording.h), so nothing is decoded or changed on the way.
+// Packets are kept byte for byte (see Recording.h), so nothing is changed on the way. The skeletons in
+// them are read as they go by and drawn in 2D: as the sensor sees them, and from above.
 // Settings are kept in bin/data/settings.json.
 //
 //--------------------------------------------------------------
@@ -23,7 +25,10 @@
 #include "ofxImGui.h"
 #include "ofxNetwork.h"
 #include "Recording.h"
+#include "BodyJoints.h"
+#include <array>
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <set>
 #include <thread>
@@ -44,7 +49,10 @@ private:
     void recordLoop( std::string path, int port, std::string fwdHost, int fwdPort );
     void playLoop( std::vector<oscrec::Packet> take, std::string host, int port );
     void noteAddresses( const char* data, size_t n );
+    void drawFront( const ofRectangle& r );
+    void drawTop( const ofRectangle& r );
     void loadSettings();
+    void listTakes();
     void saveSettings() const;
 
     ofxImGui::Gui gui;
@@ -54,7 +62,9 @@ private:
     std::atomic<bool> stopFlag { false };
 
     // what the window edits
-    char filePath[512] = "take1.oscrec";
+    char filePath[512] = "take1.oscrec";   // the take to play (in bin/data); a new recording becomes it
+    std::vector<std::string> takes;          // every recording, newest first (paths in bin/data)
+    float takesListedAt = -100.f;
     int recPort = 9998;
     bool forward = true;
     char fwdHost[128] = "127.0.0.1";
@@ -75,4 +85,13 @@ private:
     std::string status = "Idle";
     std::string lastAddress;
     std::set<std::string> bodyIds;
+
+    // The latest pose of everyone in the packets going by (sender's frame: metres, x toward the
+    // sensor's left, y up, z negative away from it), under statusMutex.
+    struct Pose {
+        std::array<glm::vec3, bodyjoints::Count> p;
+        std::array<bool, bodyjoints::Count> seen{};
+        float t = 0.f;   // ofGetElapsedTimef() of its last message
+    };
+    std::map<std::string, Pose> poses;
 };

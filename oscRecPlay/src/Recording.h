@@ -50,6 +50,60 @@ inline bool read( const std::string& path, std::vector<Packet>& packets ) {
     return true;
 }
 
+// Calls `fn` with every message in a packet (its bytes and length), looking inside bundles.
+inline void forEachMessage( const char* d, size_t n, const std::function<void( const char*, size_t )>& fn ) {
+    if( n == 0 ) return;
+    if( n >= 16 && std::memcmp( d, "#bundle", 8 ) == 0 ) {
+        size_t i = 16;
+        while( i + 4 <= n ) {
+            const uint8_t* b = reinterpret_cast<const uint8_t*>( d + i );
+            size_t len = ( size_t( b[0] ) << 24 ) | ( size_t( b[1] ) << 16 ) | ( size_t( b[2] ) << 8 ) | size_t( b[3] );
+            i += 4;
+            if( i + len > n ) return;
+            forEachMessage( d + i, len, fn );
+            i += len;
+        }
+    } else if( d[0] == '/' ) {
+        fn( d, n );
+    }
+}
+
+// A joint message, /bodies/<id>/joints/<Joint> x y z ["Tracked"|"NotTracked"]: false for anything else.
+inline bool parseJoint( const char* d, size_t n, std::string& id, std::string& joint, float xyz[3], bool& tracked ) {
+    // OSC strings end with a NUL and are padded to 4 bytes; numbers are big-endian
+    auto str = [&]( size_t& i, std::string& out ) {
+        size_t e = i;
+        while( e < n && d[e] != '\0' ) e++;
+        if( e >= n ) return false;
+        out.assign( d + i, e - i );
+        i = ( e + 4 ) & ~size_t( 3 );
+        return true;
+    };
+    auto f32 = [&]( size_t& i, float& out ) {
+        if( i + 4 > n ) return false;
+        const uint8_t* b = reinterpret_cast<const uint8_t*>( d + i );
+        uint32_t u = ( uint32_t( b[0] ) << 24 ) | ( uint32_t( b[1] ) << 16 ) | ( uint32_t( b[2] ) << 8 ) | uint32_t( b[3] );
+        std::memcpy( &out, &u, 4 );
+        i += 4;
+        return true;
+    };
+    size_t i = 0;
+    std::string address, tags;
+    if( !str( i, address ) || !str( i, tags )) return false;
+    static const std::string prefix = "/bodies/";
+    if( address.compare( 0, prefix.size(), prefix ) != 0 ) return false;
+    const size_t slash = address.find( "/joints/", prefix.size() );
+    if( slash == std::string::npos ) return false;
+    id = address.substr( prefix.size(), slash - prefix.size() );
+    joint = address.substr( slash + 8 );
+    if( tags.size() < 4 || tags.compare( 0, 4, ",fff" ) != 0 ) return false;
+    for( int k = 0; k < 3; k++ ) if( !f32( i, xyz[k] )) return false;
+    tracked = true;
+    std::string state;
+    if( tags.size() > 4 && tags[4] == 's' && str( i, state )) tracked = state == "Tracked";
+    return true;
+}
+
 // Calls `fn` with the address pattern of every message in a packet, looking inside bundles.
 inline void forEachAddress( const char* d, size_t n, const std::function<void( const std::string& )>& fn ) {
     if( n == 0 ) return;

@@ -152,3 +152,12 @@ PROJECT_LDFLAGS += $(OF_ROOT)/libs/openssl/lib/macos/openssl.xcframework/macos-a
 
 # After the build: libonnxruntime (ofxOnnx) goes next to the executable inside the .app (rpath is @executable_path/)
 PROJECT_AFTER += cp -a bin/libonnxruntime*.dylib bin/$(BIN_NAME).app/Contents/MacOS/ ;
+
+# ofxOrbbec puts the SDK in the bundle after these steps; it is done here as well so the bundle is complete when it is
+# signed (ofxOrbbec's copy afterwards then writes the same files, and the signature holds)
+PROJECT_AFTER += cp -a $(OF_ROOT)/addons/ofxOrbbec/libs/OrbbecSDK/lib/macos/*.dylib $(OF_ROOT)/addons/ofxOrbbec/libs/OrbbecSDK/extensions bin/$(BIN_NAME).app/Contents/MacOS/ ;
+
+# Last: sign the whole bundle (ad hoc), so its Info.plist, with the local network permission it asks for, is sealed into
+# the signature and the app is known by its bundle id. A make build only signs the executable, and an app opened from
+# Finder is then not given the local network.
+PROJECT_AFTER += codesign --force --deep --sign - --entitlements of.entitlements bin/$(BIN_NAME).app ;

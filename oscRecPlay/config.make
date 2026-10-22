@@ -149,3 +149,8 @@ OF_ROOT = ../../..
 
 # The OF makefile build skips openssl.xcframework (Xcode links it); curl/ofURLFileLoader need it
 PROJECT_LDFLAGS += $(OF_ROOT)/libs/openssl/lib/macos/openssl.xcframework/macos-arm64_x86_64/openssl.a
+
+# Last: sign the whole bundle (ad hoc), so its Info.plist, with the local network permission it asks for, is sealed into
+# the signature and the app is known by its bundle id. A make build only signs the executable, and an app opened from
+# Finder is then not given the local network.
+PROJECT_AFTER += codesign --force --deep --sign - --entitlements of.entitlements bin/$(BIN_NAME).app ;

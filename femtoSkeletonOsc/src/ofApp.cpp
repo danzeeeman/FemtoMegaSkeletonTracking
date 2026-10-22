@@ -1,4 +1,5 @@
 #include "ofApp.h"
+#include <unistd.h>
 #include "ofxRtmModelLoader.h"
 #include <random>
 #include <glm/gtc/matrix_transform.hpp>
@@ -26,7 +27,15 @@ void addParams( ofParameterGroup& aGroup ) {
     for( auto& p : aGroup ) {
         if( auto ts = std::dynamic_pointer_cast< ofParameter< string > >( p )) ofxImGui::AddParameter( *ts );
         else if( auto tb = std::dynamic_pointer_cast< ofParameter< bool > >( p )) ofxImGui::AddParameter( *tb );
-        else if( auto ti = std::dynamic_pointer_cast< ofParameter< int > >( p )) ofxImGui::AddParameter( *ti );
+        else if( auto ti = std::dynamic_pointer_cast< ofParameter< int > >( p )) {
+            // a port is typed in, not dragged to
+            if( ofIsStringInString( ofToLower( ti->getName() ), "port" )) {
+                int tv = ti->get();
+                if( ImGui::InputInt( ti->getName().c_str(), &tv, 0, 0 )) ti->set( ofClamp( tv, ti->getMin(), ti->getMax() ));
+            } else {
+                ofxImGui::AddParameter( *ti );
+            }
+        }
         else if( auto tf = std::dynamic_pointer_cast< ofParameter< float > >( p )) ofxImGui::AddParameter( *tf );
     }
 }
@@ -95,6 +104,8 @@ void runSelfTest() {
 
 //--------------------------------------------------------------
 void ofApp::setup() {
+    // started from Finder there is no terminal to see the log in: it goes to bin/data/femtoSkeletonOsc.log
+    if( !isatty( STDERR_FILENO )) ofLogToFile( "femtoSkeletonOsc.log", false );
     if( ofGetEnv( "FEMTO_SELFTEST" ) != "" ) {
         runSelfTest();
         ofExit( 0 );
@@ -117,6 +128,7 @@ void ofApp::setup() {
     params.add( colorWidth.set( "Colour width (0 fastest)", 0, 0, 3840 ));
     params.add( colorHeight.set( "Colour height (0 fastest)", 0, 0, 2160 ));
     params.add( floorBelow.set( "Floor below camera 0 (m)", 1.5f, 0.f, 5.f ));
+    params.add( useYolo.set( "Pose model YOLO11n-pose (else RTMW)", true ));
 
     // everything that is kept goes in and out of one file
     mAllParams.setName( "FemtoSkeletonOsc" );
@@ -153,6 +165,9 @@ void ofApp::setup() {
         mCams[1]->toRef = glm::translate( glm::mat4( 1.f ), glm::vec3( 2.4f, 0.f, 4.2f )) * glm::rotate( glm::mat4( 1.f ), glm::radians( 150.f ), glm::vec3( 0.f, 1.f, 0.f ));
         mCams[1]->calibrated = true;
     }
+
+    mOutRunning = true;
+    mOutThread = std::thread( &ofApp::outputLoop, this );
 }
 
 //--------------------------------------------------------------
@@ -218,6 +233,28 @@ void ofApp::saveCalibration() {
 
 //--------------------------------------------------------------
 void ofApp::setupTracker( Camera& aCam ) {
+    ofLogNotice( "FemtoSkeletonOsc" ) << "camera " << aCam.index << ": pose model " << ( useYolo ? "YOLO11n-pose" : "RTMW" );
+    if( useYolo ) {
+        // YOLO11n-pose: people and their 17 keypoints in one pass. Fetched the first time with the system's curl.
+        const string tpath = ofToDataPath( "models/YoloPose/yolo11n-pose.onnx", true );
+        if( !ofFile::doesFileExist( tpath )) {
+            ofDirectory::createDirectory( ofFilePath::getEnclosingDirectory( tpath ), false, true );
+            ofLogNotice( "FemtoSkeletonOsc" ) << "downloading yolo11n-pose.onnx";
+            const string tcmd = "curl -fsSL -m 600 -o \"" + tpath + "\" https://huggingface.co/MikeLud/ObjectDetectionYOLO11-ONNX/resolve/main/yolo11n-pose.onnx";
+            if( system( tcmd.c_str()) != 0 ) ofFile::removeFile( tpath );
+        }
+        auto tyolo = std::make_shared< ofxYoloPose >();
+        ofxYoloPose::Settings tys;
+        tys.modelPath = tpath;
+        if( mDebug ) tys.logLevel = OF_LOG_VERBOSE;   // debug builds: what it decodes, every couple of seconds
+        if( tyolo->setup( tys )) {
+            std::lock_guard< std::mutex > tlk( aCam.mtx );
+            aCam.yolo = tyolo;
+        } else {
+            ofLogError( "FemtoSkeletonOsc" ) << "camera " << aCam.index << ": YOLO11n-pose did not load";
+        }
+        return;
+    }
     // The detector finds the people, the whole-body pose model puts 133 joints on each (body, feet, face, hands).
     // The models are downloaded the first time.
     ofHttpRequest treq;
@@ -227,12 +264,16 @@ void ofApp::setupTracker( Camera& aCam ) {
     // the tiny detector: a 416x416 input instead of yolox_m's 640x640, for speed
     tsettings.detectorModelPath = ofxRtmModelLoader::loadModel( "yolox_tiny", "models/RtmDetectors",
         "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/yolox_tiny_8xb8-300e_humanart-6f3252f9.zip", treq );
-    tsettings.poseModelPath = ofxRtmModelLoader::loadModel( "rtmpose-l-384x288", "models/RtmPoseWholeBody",
-        "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-l_simcc-ucoco_dw-ucoco_270e-384x288-2438fd99_20230728.zip", treq );
+    // RTMW-x-l: the whole-body model trained on 14 datasets together (Cocktail14), better on hands, crossed arms
+    // and people side on than RTMPose-l on COCO-WholeBody alone; the same 133 keypoints
+    tsettings.poseModelPath = ofxRtmModelLoader::loadModel( "rtmw-x-l-384x288", "models/RtmPoseWholeBody",
+        "https://download.openmmlab.com/mmpose/v1/projects/rtmw/onnx_sdk/rtmw-dw-x-l_simcc-cocktail14_270e-384x288_20231122.zip", treq );
     tsettings.logLevel = OF_LOG_NOTICE;
     auto ttracker = std::make_shared< ofxRtmPoseTracker >();
     if( ttracker->setup( tsettings )) {
-        ttracker->start();
+        // run by the camera's thread (cameraLoop), not on a thread of its own or from the app's update
+        ttracker->setEnableUpdateListeners( false );
+        std::lock_guard< std::mutex > tlk( aCam.mtx );
         aCam.tracker = ttracker;
     } else {
         ofLogError( "FemtoSkeletonOsc" ) << "camera " << aCam.index << ": the pose tracker did not load";
@@ -241,6 +282,7 @@ void ofApp::setupTracker( Camera& aCam ) {
 
 //--------------------------------------------------------------
 void ofApp::applyOsc() {
+    std::lock_guard< std::mutex > tlk( mOscMutex );
     mSkeleton.setup( oscHost, oscPort );
     ofLogNotice( "FemtoSkeletonOsc" ) << "sending OSC to " << oscHost.get() << ":" << oscPort.get();
 }
@@ -251,7 +293,11 @@ void ofApp::connectCamera( Camera& aCam ) {
     ofxOrbbecDevice::Options topts;
     topts.colorWidth = colorWidth;
     topts.colorHeight = colorHeight;
-    // fps and the depth mode left at 0: the fastest the camera offers
+    // fps left at 0: the fastest the camera offers. Depth at 640x576 (narrow, unbinned, still 30 fps) rather than
+    // the fastest 320x288: registered into 1280x720 colour, the binned depth leaves a hand or a finger too few
+    // depth pixels of its own, and it takes the wall behind.
+    topts.depthWidth = 640;
+    topts.depthHeight = 576;
     topts.alignDepthToColor = true;   // a colour pixel indexes the depth image directly
     topts.netAddress = aCam.ip.get();
     topts.netPort = cameraPort;
@@ -269,75 +315,403 @@ void ofApp::connectCamera( Camera& aCam ) {
 //--------------------------------------------------------------
 void ofApp::update() {
     if( mAutoQuitSec > 0 && ofGetElapsedTimef() > mAutoQuitSec ) {
-        size_t tin = 0;
+        size_t tin = 0, tsent = 0;
         for( auto& c : mCams ) tin += c->framesIn;
+        {
+            std::lock_guard< std::mutex > tlk( mOscMutex );
+            tsent = mSkeleton.getNumSent();
+        }
         ofLogNotice( "FemtoSkeletonOsc" ) << "quitting: " << tin << " frames in, " << mBodiesSent << " bodies and "
-                                          << mSkeleton.getNumSent() << " OSC messages sent; " << ofGetFrameRate() << " fps";
+                                          << tsent << " OSC messages sent; " << ofGetFrameRate() << " fps";
         ofExit();
         return;
     }
 
-    const double tnow = ofGetElapsedTimef();
-    bool tany = false;
+    // FEMTO_PLAY=<file in bin/data>: camera 0 plays that recording from the start.
+    // FEMTO_RECORD=1: camera 0 is recorded from when it opens (with TRACKER_QUIT_AFTER, for a take of a set length).
+    static const string tplayEnv = ofGetEnv( "FEMTO_PLAY" ), trecordEnv = ofGetEnv( "FEMTO_RECORD" );
+    static bool tplayStarted = false, trecordStarted = false;
+    if( !tplayEnv.empty() && !tplayStarted ) {
+        tplayStarted = true;
+        mCams[0]->selectedTake = tplayEnv;
+        playTake( *mCams[0], tplayEnv );
+    }
+    if( !trecordEnv.empty() && !trecordStarted && mCams[0]->running && !mCams[0]->player ) {
+        trecordStarted = true;
+        const string tpath = "femto_takes/cam0_" + ofGetTimestampString( "%Y%m%d_%H%M%S" ) + ".femto";
+        mCams[0]->recorder.start( ofToDataPath( tpath, true ), mCams[0]->device.getSerial(), mCams[0]->K );
+    }
+
     for( auto& c : mCams ) {
         Camera& cam = *c;
-        cam.newBodies = false;
         if( !cam.enabled ) {
-            if( cam.device.isOpen() && !cam.connecting.valid() ) { cam.device.close(); cam.bodies.clear(); }
+            if( cam.player ) stopTake( cam );
+            if( cam.device.isOpen() && !cam.connecting.valid() ) {
+                stopCamera( cam );
+                cam.device.close();
+                std::lock_guard< std::mutex > tlk( cam.mtx );
+                cam.bodies.clear();
+                cam.poses2d.clear();
+            }
             continue;
         }
         // a failed load (no network, say) is a download each time: try again every 30 s, not every frame
-        if( !cam.tracker && ofGetElapsedTimef() - cam.lastTrackerTry > 30.f ) {
+        if(( useYolo ? !cam.yolo : !cam.tracker ) && ofGetElapsedTimef() - cam.lastTrackerTry > 30.f ) {
             cam.lastTrackerTry = ofGetElapsedTimef();
             setupTracker( cam );
         }
-        if( cam.connecting.valid() ) {
+        if( cam.player ) {
+            // a recording in place of the camera: nothing to connect to
+        } else if( cam.connecting.valid() ) {
             if( cam.connecting.wait_for( std::chrono::seconds( 0 )) != std::future_status::ready ) continue;
             if( cam.connecting.get() ) {
                 cam.K = cam.device.getColorIntrinsics();
                 ofLogNotice( "FemtoSkeletonOsc" ) << "camera " << cam.index << ": Femto " << cam.device.getSerial() << " at " << cam.ip.get()
                                                   << " open, colour " << cam.K.width << "x" << cam.K.height << " fx " << cam.K.fx << " fy " << cam.K.fy;
+                startCamera( cam );
             }
             cam.lastTry = ofGetElapsedTimef();
         }
-        if( !cam.device.isOpen() ) {
+        if( !cam.player && !cam.device.isOpen() ) {
             if( ofGetElapsedTimef() - cam.lastTry > 3.f ) connectCamera( cam );
             continue;
         }
-        updateCamera( cam );
-        tany |= cam.newBodies;
-    }
-
-    if( mDemo ) { updateDemo(); tany = true; }
-    for( int i = 1; i < kMaxCameras; i++ ) if( mCams[i]->collecting && mCams[i]->newBodies ) collectCalibration( *mCams[i] );
-
-    if( !tany ) return;
-
-    // everything the calibrated cameras saw lately, in camera 0's frame, merged into people
-    std::vector< SkeletonFusion::Detection > tdets;
-    for( auto& c : mCams ) {
-        const Camera& cam = *c;
-        if( !cam.active() || ( cam.index > 0 && !cam.calibrated )) continue;
-        if( tnow - cam.bodiesTime > 0.3 ) continue;
-        for( auto& b : cam.bodies ) {
-            SkeletonFusion::Detection td;
-            td.camera = cam.index;
-            td.body = b;
-            for( int j = 0; j < FemtoSkeleton::TOTAL_JOINTS; j++ ) {
-                if( !b.seen[j] ) continue;
-                glm::vec3 tp = glm::vec3( cam.toRef * glm::vec4( vec3Of( b.cam[j] ), 1.f ));
-                td.body.cam[j] = ofVec3f( tp.x, tp.y, tp.z );
-            }
-            tdets.push_back( td );
+        // the newest picture, for the texture
+        std::lock_guard< std::mutex > tlk( cam.mtx );
+        if( cam.shownNew ) {
+            if( cam.tex.isAllocated() && ( cam.tex.getWidth() != cam.shown.getWidth() || cam.tex.getHeight() != cam.shown.getHeight() )) cam.tex.clear();
+            cam.tex.loadData( cam.shown );
+            cam.shownNew = false;
         }
     }
-    for( auto& t : mFusion.update( tdets, tnow )) {
-        if( !t.updated ) continue;
-        FemtoSkeleton::Body tb = t.body;
-        if( !mSkeleton.toSensorFrame( tb )) continue;
-        if( bSend ) {
-            mSkeleton.send( tb );
-            mBodiesSent++;
+
+    if( mDemo ) {
+        updateDemo();
+        wakeOutput();
+    }
+}
+
+//--------------------------------------------------------------
+// The recordings of the cameras (bin/data/femto_takes/*.femto), newest first.
+void ofApp::listTakes() {
+    mTakesListedAt = ofGetElapsedTimef();
+    std::vector< std::pair< long long, string >> tfound;
+    ofDirectory td( ofToDataPath( "femto_takes", true ));
+    if( td.exists() ) {
+        td.allowExt( "femto" );
+        td.listDir();
+        for( auto& f : td ) tfound.push_back( { (long long)std::filesystem::last_write_time( f.path() ).time_since_epoch().count(), "femto_takes/" + f.getFileName() } );
+    }
+    std::sort( tfound.begin(), tfound.end(), []( auto& a, auto& b ) { return a.first > b.first; } );
+    mTakes.clear();
+    for( auto& f : tfound ) mTakes.push_back( f.second );
+}
+
+// A recording played in place of the camera: the camera is let go, the worker takes its frames from the recording.
+void ofApp::playTake( Camera& aCam, const string& aPath ) {
+    stopCamera( aCam );
+    aCam.recorder.stop();
+    if( aCam.connecting.valid() ) aCam.connecting.wait();
+    if( aCam.device.isOpen() ) aCam.device.close();
+    auto tplayer = std::make_shared< ofxOrbbecPlayer >();
+    if( !tplayer->open( ofToDataPath( aPath, true ))) return;
+    aCam.K = tplayer->getColorIntrinsics();
+    {
+        std::lock_guard< std::mutex > tlk( aCam.mtx );
+        aCam.player = tplayer;
+        aCam.bodies.clear();
+        aCam.boxes.clear();
+        aCam.poses2d.clear();
+    }
+    startCamera( aCam );
+}
+
+// Back to the camera: the next update() connects to it again.
+void ofApp::stopTake( Camera& aCam ) {
+    stopCamera( aCam );
+    {
+        std::lock_guard< std::mutex > tlk( aCam.mtx );
+        aCam.player.reset();
+        aCam.bodies.clear();
+        aCam.boxes.clear();
+        aCam.poses2d.clear();
+    }
+    aCam.lastTry = -100.f;
+}
+
+//--------------------------------------------------------------
+bool ofApp::recordingAny() const {
+    for( auto& c : mCams ) if( c->recorder.isRecording() ) return true;
+    return false;
+}
+
+void ofApp::toggleRecording() {
+    if( recordingAny() ) {
+        for( auto& c : mCams ) c->recorder.stop();
+        mTakesListedAt = -100.f;
+        return;
+    }
+    // one time for all the cameras' files, so a take's files go together
+    const string tstamp = ofGetTimestampString( "%Y%m%d_%H%M%S" );
+    for( auto& c : mCams ) {
+        Camera& cam = *c;
+        if( !cam.enabled || cam.player || !cam.device.isOpen() ) continue;
+        const string tpath = "femto_takes/cam" + ofToString( cam.index ) + "_" + tstamp + ".femto";
+        if( cam.recorder.start( ofToDataPath( tpath, true ), cam.device.getSerial(), cam.K )) cam.selectedTake = tpath;
+    }
+}
+
+//--------------------------------------------------------------
+void ofApp::startCamera( Camera& aCam ) {
+    if( aCam.running ) return;
+    aCam.running = true;
+    aCam.worker = std::thread( &ofApp::cameraLoop, this, std::ref( aCam ));
+}
+
+void ofApp::stopCamera( Camera& aCam ) {
+    aCam.running = false;
+    if( aCam.worker.joinable() ) aCam.worker.join();
+}
+
+//--------------------------------------------------------------
+// A camera's own thread: its newest frame, the poses in it, and that frame's skeletons from that frame's own depth
+// (the tracker is run here, not on a thread of its own, so the poses and the depth are always the same moment).
+// Frames that come while the models run are passed over: the next one taken is the newest.
+void ofApp::cameraLoop( Camera& aCam ) {
+    ofEventArgs targs;
+    // a recording played in place of the camera, if one is (it is set before this thread starts)
+    std::shared_ptr< ofxOrbbecPlayer > tplayer;
+    {
+        std::lock_guard< std::mutex > tlk( aCam.mtx );
+        tplayer = aCam.player;
+    }
+    while( aCam.running ) {
+        if( tplayer ) tplayer->update(); else aCam.device.update();
+        const ofxOrbbecFrame& tframe = tplayer ? tplayer->getFrame() : aCam.device.getFrame();
+        if( !tframe.isNew || !tframe.color.isAllocated() ) {
+            std::this_thread::sleep_for( std::chrono::milliseconds( 1 ));
+            continue;
+        }
+        aCam.framesIn++;
+        // the colour is copied (it goes on to the texture); the depth is read where it is, which holds until the
+        // next device.update(), on this thread
+        ofPixels tcolor = tframe.color;
+        const ofShortPixels& tdepth = tframe.depth;
+
+        // the camera's pitch and roll: from its accelerometer when it has one
+        glm::vec3 tup;
+        glm::mat3 tlevel( 1.f );
+        bool tleveled = false, timu = false;
+        float tpitch = 0.f, troll = 0.f;
+        glm::vec3 traw;
+        const bool thasRaw = tplayer ? tplayer->getUp( traw ) : aCam.device.getUp( traw );
+        // recording: the frame as the camera gave it, with the accelerometer as it read
+        if( !tplayer && aCam.recorder.isRecording() ) aCam.recorder.add( tcolor, tdepth, thasRaw, traw );
+        if( aCam.levelFromImu && thasRaw ) {
+            tup = traw;
+            if( aCam.invertImu ) tup = -tup;
+            timu = true;
+            tpitch = glm::degrees( std::asin( glm::clamp( tup.z, -1.f, 1.f )));
+            troll = glm::degrees( std::atan2( tup.x, -tup.y ));
+            tleveled = levelMatrix( tup, tlevel );
+        }
+
+        std::shared_ptr< ofxRtmPoseTracker > ttracker;
+        std::shared_ptr< ofxYoloPose > tyolo;
+        {
+            std::lock_guard< std::mutex > tlk( aCam.mtx );
+            ttracker = aCam.tracker;
+            tyolo = aCam.yolo;
+        }
+        if( useYolo ) ttracker.reset(); else tyolo.reset();
+        bool tnew = false;
+        vector< FemtoSkeleton::Body > tbodies;
+        vector< FemtoSkeleton::Box > tboxes;
+        vector< Camera::Pose2D > tposes;
+        // the people in this frame, as the RTM tracker gives them (YOLO's are put in the same form): keypoints in
+        // colour pixels, so build() and buildBox() take either
+        vector< std::shared_ptr< ofxRtmTrackedPose >> tfound;
+        if( tyolo ) {
+            tnew = tyolo->run( tcolor );
+            aCam.toTracker++;
+            if( tnew ) {
+                for( auto& yp : tyolo->getPoses() ) {
+                    auto tp = std::make_shared< ofxRtmTrackedPose >();
+                    tp->ID = yp.id;
+                    tp->bFoundThisFrame = yp.foundThisFrame;
+                    tp->keypoints.assign( yp.keypoints.begin(), yp.keypoints.end() );
+                    tp->scores.assign( yp.scores.begin(), yp.scores.end() );
+                    tp->box.outRect = yp.box;
+                    tp->box.score = yp.score;
+                    tfound.push_back( tp );
+                }
+            }
+        } else if( ttracker ) {
+            ttracker->update( targs );   // ages what it tracks, and clears the last frame's "new"
+            // keypoints come back as pixels of the colour image
+            ttracker->setOutRect( ofRectangle( 0, 0, tcolor.getWidth(), tcolor.getHeight() ));
+            tnew = ttracker->run( tcolor ) && ttracker->hasNewData();
+            aCam.toTracker++;
+            if( tnew ) tfound = ttracker->getPoses();
+        }
+        {
+            if( tnew ) {
+                Camera::DebugCounts& d = aCam.dbg;
+                for( auto& tpose : tfound ) {
+                    if( !tpose ) continue;
+                    if( mDebug ) d.poses++;
+                    if( !tpose->bFoundThisFrame ) continue;
+                    tposes.push_back( { tpose->ID, tpose->keypoints, tpose->scores, tpose->box.outRect, true } );
+                    if( mDebug ) {
+                        d.found++;
+                        // the body keypoints build() uses: COCO 5..16
+                        for( int k = 5; k <= 16 && k < (int)tpose->keypoints.size() && k < (int)tpose->scores.size(); k++ ) {
+                            d.scoreMax = std::max( d.scoreMax, tpose->scores[k] );
+                            if( tpose->scores[k] < mSkeleton.minScore ) continue;
+                            d.scored++;
+                            ofVec3f tp;
+                            if( mSkeleton.unproject( ofVec2f( tpose->keypoints[k].x, tpose->keypoints[k].y ), tdepth, aCam.K, tp )) d.withDepth++;
+                        }
+                    }
+                    FemtoSkeleton::Body tbody;
+                    const bool tbuilt = mSkeleton.build( *tpose, tdepth, aCam.K, tbody, tleveled ? &tlevel : nullptr );
+                    if( tbuilt ) {
+                        tbodies.push_back( tbody );
+                    } else {
+                        // found, but too little of the skeleton placed (arms crossed, turned away, half out of view):
+                        // the person still is somewhere, so their box goes out instead
+                        FemtoSkeleton::Box tbox;
+                        if( mSkeleton.buildBox( *tpose, tdepth, aCam.K, tbox, tleveled ? &tlevel : nullptr )) tboxes.push_back( tbox );
+                        tposes.back().skeleton = false;
+                    }
+                    if( mDebug ) {
+                        d.ids.insert( tpose->ID );
+                        if( tbuilt ) { d.jointsMin = std::min( d.jointsMin, tbody.numSeen ); d.jointsMax = std::max( d.jointsMax, tbody.numSeen ); }
+                        else d.notBuilt++;
+                    }
+                }
+            }
+        }
+
+        if( mDebug && tnew ) {
+            Camera::DebugCounts& d = aCam.dbg;
+            d.updates++;
+            d.built += (int)tbodies.size();
+            if( ofGetElapsedTimef() - d.lastLog > 1.f ) {
+                size_t tvalid = 0;
+                const size_t tnpix = (size_t)tdepth.getWidth() * tdepth.getHeight();
+                for( size_t i = 0; i < tnpix; i++ ) if( tdepth.getData()[i] ) tvalid++;
+                ofLogNotice( "FemtoSkeletonOsc" ) << "debug cam " << aCam.index << ": " << ( aCam.framesIn - d.framesAtLog ) << " camera frames, "
+                    << d.updates << " tracker updates, " << d.poses << " poses, "
+                    << d.found << " found, body keypoints scored " << d.scored << " (max score " << d.scoreMax << "), with depth " << d.withDepth
+                    << ", bodies built " << d.built << " | depth " << tdepth.getWidth() << "x" << tdepth.getHeight() << " "
+                    << ( tnpix ? 100.0 * tvalid / tnpix : 0.0 ) << "% valid, colour " << tcolor.getWidth() << "x" << tcolor.getHeight()
+                    << ", K " << aCam.K.width << "x" << aCam.K.height;
+                string tids;
+                for( auto i : d.ids ) tids += ofToString( i ) + " ";
+                ofLogNotice( "FemtoSkeletonOsc" ) << "debug cam " << aCam.index << ": ids " << tids << "| joints per body "
+                    << ( d.built ? ofToString( d.jointsMin ) + "-" + ofToString( d.jointsMax ) : string( "-" )) << ", found but not sent " << d.notBuilt;
+                if( timu ) {
+                    ofLogNotice( "FemtoSkeletonOsc" ) << "debug cam " << aCam.index << ": accelerometer up (colour camera frame, y down) "
+                        << tup.x << " " << tup.y << " " << tup.z << ( aCam.invertImu ? ", inverted by the setting" : "" )
+                        << ", pitch " << tpitch << " roll " << troll << ( tleveled ? " levelling" : "" );
+                }
+                const size_t tframes = aCam.framesIn;
+                d = Camera::DebugCounts();
+                d.framesAtLog = tframes;
+                d.lastLog = ofGetElapsedTimef();
+            }
+        }
+
+        // hand it all over
+        {
+            std::lock_guard< std::mutex > tlk( aCam.mtx );
+            std::swap( aCam.shown, tcolor );
+            aCam.shownNew = true;
+            aCam.leveled = tleveled;
+            if( tleveled ) aCam.levelM = tlevel;
+            if( timu ) { aCam.pitchDeg = tpitch; aCam.rollDeg = troll; }
+            if( tnew ) {
+                aCam.poses2d = std::move( tposes );
+                aCam.bodies = std::move( tbodies );
+                aCam.boxes = std::move( tboxes );
+                aCam.bodiesTime = ofGetElapsedTimef();
+            }
+        }
+        if( tnew ) wakeOutput();
+    }
+}
+
+//--------------------------------------------------------------
+void ofApp::wakeOutput() {
+    {
+        std::lock_guard< std::mutex > tlk( mOutWakeMutex );
+        mOutWake = true;
+    }
+    mOutCv.notify_one();
+}
+
+// The output thread: whenever a camera has new bodies, everything the calibrated cameras saw lately, in camera 0's
+// frame, merged into people and sent.
+void ofApp::outputLoop() {
+    while( mOutRunning ) {
+        {
+            std::unique_lock< std::mutex > tlk( mOutWakeMutex );
+            mOutCv.wait_for( tlk, std::chrono::milliseconds( 100 ), [&] { return mOutWake || !mOutRunning; } );
+            if( !mOutWake ) continue;
+            mOutWake = false;
+        }
+        const double tnow = ofGetElapsedTimef();
+
+        // calibration points: a camera's person and camera 0's, at about the same moment
+        vector< FemtoSkeleton::Body > tref;
+        double trefTime = 0.0;
+        {
+            std::lock_guard< std::mutex > tlk( mCams[0]->mtx );
+            tref = mCams[0]->bodies;
+            trefTime = mCams[0]->bodiesTime;
+        }
+        for( int i = 1; i < kMaxCameras; i++ ) if( mCams[i]->collecting ) collectCalibration( *mCams[i], tref, trefTime );
+
+        std::vector< SkeletonFusion::Detection > tdets;
+        struct OutBox { uint64_t id; glm::vec3 centre, size; };
+        std::vector< OutBox > tboxes;
+        for( auto& c : mCams ) {
+            Camera& cam = *c;
+            std::lock_guard< std::mutex > tlk( cam.mtx );
+            if( !cam.active() || ( cam.index > 0 && !cam.calibrated )) continue;
+            if( tnow - cam.bodiesTime > 0.3 ) continue;
+            // a box's id keeps clear of the merged people's: the camera's number, then the tracker's id
+            for( auto& b : cam.boxes ) tboxes.push_back( { (uint64_t)cam.index * 1000000 + b.id, glm::vec3( cam.toRef * glm::vec4( b.centre, 1.f )), b.size } );
+            for( auto& b : cam.bodies ) {
+                SkeletonFusion::Detection td;
+                td.camera = cam.index;
+                td.body = b;
+                for( int j = 0; j < FemtoSkeleton::TOTAL_JOINTS; j++ ) {
+                    if( !b.seen[j] ) continue;
+                    glm::vec3 tp = glm::vec3( cam.toRef * glm::vec4( vec3Of( b.cam[j] ), 1.f ));
+                    td.body.cam[j] = ofVec3f( tp.x, tp.y, tp.z );
+                }
+                tdets.push_back( td );
+            }
+        }
+
+        vector< FemtoSkeleton::Body > tout;
+        {
+            std::lock_guard< std::mutex > tlk( mFusionMutex );
+            for( auto& t : mFusion.update( tdets, tnow )) {
+                if( !t.updated ) continue;
+                FemtoSkeleton::Body tb = t.body;
+                if( mSkeleton.toSensorFrame( tb )) tout.push_back( tb );
+            }
+        }
+        if( bSend && ( !tout.empty() || !tboxes.empty() )) {
+            std::lock_guard< std::mutex > tlk( mOscMutex );
+            for( auto& tb : tout ) {
+                mSkeleton.send( tb );
+                mBodiesSent++;
+            }
+            for( auto& tb : tboxes ) mSkeleton.sendBox( tb.id, tb.centre, tb.size );
         }
     }
 }
@@ -372,109 +746,24 @@ void ofApp::updateDemo() {
             tb.cam[j.joint] = ofVec3f( tp.x, tp.y, tp.z );
             tb.seen[j.joint] = true;
         }
+        std::lock_guard< std::mutex > tlk( cam.mtx );
         cam.bodies.assign( 1, tb );
         cam.bodiesTime = ofGetElapsedTimef();
-        cam.newBodies = true;
     }
-}
-
-//--------------------------------------------------------------
-void ofApp::updateCamera( Camera& aCam ) {
-    aCam.device.update();
-    const ofxOrbbecFrame& tframe = aCam.device.getFrame();
-    if( tframe.isNew && tframe.color.isAllocated() ) {
-        aCam.framesIn++;
-        aCam.color = tframe.color;
-        aCam.depth = tframe.depth;
-        if( aCam.tex.isAllocated() && ( aCam.tex.getWidth() != aCam.color.getWidth() || aCam.tex.getHeight() != aCam.color.getHeight() )) aCam.tex.clear();
-        aCam.tex.loadData( aCam.color );
-
-        if( aCam.tracker ) {
-            // keypoints come back as pixels of the colour image
-            aCam.tracker->setOutRect( ofRectangle( 0, 0, aCam.color.getWidth(), aCam.color.getHeight() ));
-            if( aCam.tracker->run( aCam.color )) aCam.toTracker++;
-        }
-    }
-
-    // the camera's pitch and roll: from its accelerometer when it has one
-    glm::vec3 tup;
-    glm::mat3 tlevel;
-    aCam.leveled = false;
-    if( aCam.levelFromImu && aCam.device.getUp( tup )) {
-        if( aCam.invertImu ) tup = -tup;
-        aCam.pitchDeg = glm::degrees( std::asin( glm::clamp( tup.z, -1.f, 1.f )));
-        aCam.rollDeg = glm::degrees( std::atan2( tup.x, -tup.y ));
-        if( levelMatrix( tup, tlevel )) {
-            mSkeleton.setLevelMatrix( tlevel );
-            aCam.levelM = tlevel;
-            aCam.leveled = true;
-        }
-    }
-    if( !aCam.leveled ) mSkeleton.clearLevelMatrix();
-
-    // new poses: build the skeletons
-    if( aCam.tracker && aCam.tracker->hasNewData() ) {
-        aCam.bodies.clear();
-        // debug-build counts, logged once a second
-        static int sPoses = 0, sFound = 0, sScored = 0, sWithDepth = 0, sBuilt = 0, sUpdates = 0;
-        static float sScoreMax = 0.f, sLastLog = 0.f;
-        for( auto& tpose : aCam.tracker->getPoses() ) {
-            if( mDebug && tpose ) {
-                sPoses++;
-                if( tpose->bFoundThisFrame ) {
-                    sFound++;
-                    // the body keypoints build() uses: COCO 5..16
-                    for( int k = 5; k <= 16 && k < (int)tpose->keypoints.size() && k < (int)tpose->scores.size(); k++ ) {
-                        sScoreMax = std::max( sScoreMax, tpose->scores[k] );
-                        if( tpose->scores[k] < mSkeleton.minScore ) continue;
-                        sScored++;
-                        ofVec3f tp;
-                        if( mSkeleton.unproject( ofVec2f( tpose->keypoints[k].x, tpose->keypoints[k].y ), aCam.depth, aCam.K, tp )) sWithDepth++;
-                    }
-                }
-            }
-            if( !tpose || !tpose->bFoundThisFrame ) continue;
-            FemtoSkeleton::Body tbody;
-            if( mSkeleton.build( *tpose, aCam.depth, aCam.K, tbody )) aCam.bodies.push_back( tbody );
-        }
-        if( mDebug ) {
-            sUpdates++;
-            sBuilt += (int)aCam.bodies.size();
-            if( ofGetElapsedTimef() - sLastLog > 1.f ) {
-                size_t tvalid = 0;
-                const size_t tnpix = (size_t)aCam.depth.getWidth() * aCam.depth.getHeight();
-                for( size_t i = 0; i < tnpix; i++ ) if( aCam.depth.getData()[i] ) tvalid++;
-                ofLogNotice( "FemtoSkeletonOsc" ) << "debug cam " << aCam.index << ": " << sUpdates << " tracker updates, " << sPoses << " poses, "
-                    << sFound << " found, body keypoints scored " << sScored << " (max score " << sScoreMax << "), with depth " << sWithDepth
-                    << ", bodies built " << sBuilt << " | depth " << aCam.depth.getWidth() << "x" << aCam.depth.getHeight() << " "
-                    << ( tnpix ? 100.0 * tvalid / tnpix : 0.0 ) << "% valid, colour " << aCam.color.getWidth() << "x" << aCam.color.getHeight()
-                    << ", K " << aCam.K.width << "x" << aCam.K.height;
-                glm::vec3 traw;
-                if( aCam.device.getUp( traw )) {
-                    ofLogNotice( "FemtoSkeletonOsc" ) << "debug cam " << aCam.index << ": accelerometer up (colour camera frame, y down) "
-                        << traw.x << " " << traw.y << " " << traw.z << ( aCam.invertImu ? ", inverted by the setting" : "" )
-                        << ", pitch " << aCam.pitchDeg << " roll " << aCam.rollDeg << ( aCam.leveled ? " levelling" : "" );
-                }
-                sPoses = sFound = sScored = sWithDepth = sBuilt = sUpdates = 0;
-                sScoreMax = 0.f;
-                sLastLog = ofGetElapsedTimef();
-            }
-        }
-        aCam.bodiesTime = ofGetElapsedTimef();
-        aCam.newBodies = true;
-    }
-    mSkeleton.clearLevelMatrix();
 }
 
 //--------------------------------------------------------------
 // While collecting: one person alone in view of both this camera and camera 0, at about the same moment, gives
 // a point for every joint both place.
-void ofApp::collectCalibration( Camera& aCam ) {
-    const Camera& tref = *mCams[0];
-    if( !tref.device.isOpen() || tref.bodies.size() != 1 || aCam.bodies.size() != 1 ) return;
-    if( std::abs( tref.bodiesTime - aCam.bodiesTime ) > 0.1 ) return;
+// On the output thread, with camera 0's bodies as it took them.
+void ofApp::collectCalibration( Camera& aCam, const vector< FemtoSkeleton::Body >& aRefBodies, double aRefTime ) {
+    if( !mCams[0]->device.isOpen() || aRefBodies.size() != 1 ) return;
+    std::lock_guard< std::mutex > tlk( aCam.mtx );
+    if( aCam.bodies.size() != 1 || aCam.bodiesTime == aCam.calTakenAt ) return;
+    if( std::abs( aRefTime - aCam.bodiesTime ) > 0.1 ) return;
+    aCam.calTakenAt = aCam.bodiesTime;
     const auto& ta = aCam.bodies[0];
-    const auto& tb = tref.bodies[0];
+    const auto& tb = aRefBodies[0];
     for( int j = 0; j < FemtoSkeleton::TOTAL_JOINTS; j++ )
         if( ta.seen[j] && tb.seen[j] ) aCam.cal.add( vec3Of( ta.cam[j] ), vec3Of( tb.cam[j] ));
 }
@@ -484,28 +773,61 @@ void ofApp::draw() {
     std::vector< Camera* > tshown;
     for( auto& c : mCams ) if( c->enabled && c->tex.isAllocated() ) tshown.push_back( c.get() );
 
-    // the right of the window: each camera with its poses over it, in a column, and the joined space in 3D
+    // the right of the window: each camera with its poses over it, in a row along the top, and the joined
+    // space in 3D below, in perspective (orbits with the mouse) and from above
     ofRectangle tfull( 450, 10, ofGetWidth() - 460, ofGetHeight() - 20 );
     const bool tcams = !tshown.empty();
-    ofRectangle tarea( tfull.x, tfull.y, tcams ? tfull.width * 0.36f : 0.f, tfull.height );
-    mViewRect = ofRectangle( tarea.getRight() + ( tcams ? 6.f : 0.f ), tfull.y, tfull.getRight() - tarea.getRight() - ( tcams ? 6.f : 0.f ), tfull.height );
-    int tcols = 1;
-    int trows = std::max( 1, (int)tshown.size() );
-    float tw = tarea.width / tcols, th = tarea.height / trows;
+    ofRectangle tarea( tfull.x, tfull.y, tfull.width, tcams ? tfull.height * 0.3f : 0.f );
+    const float tbelow = tarea.getBottom() + ( tcams ? 6.f : 0.f );
+    const float thalf = ( tfull.width - 6.f ) * 0.5f;
+    mViewRect = ofRectangle( tfull.x, tbelow, thalf, tfull.getBottom() - tbelow );
+    const ofRectangle ttop( mViewRect.getRight() + 6.f, tbelow, thalf, mViewRect.height );
+    const int tcols = std::max( 1, (int)tshown.size() );
+    const float tw = tarea.width / tcols;
     for( size_t i = 0; i < tshown.size(); i++ ) {
         Camera& cam = *tshown[i];
-        ofRectangle ttile( tarea.x + ( i % tcols ) * tw, tarea.y + ( i / tcols ) * th, tw - 6, th - 6 );
+        ofRectangle ttile( tarea.x + i * tw, tarea.y, tw - 6, tarea.height );
         ofRectangle timg( 0, 0, cam.tex.getWidth(), cam.tex.getHeight() );
         timg.scaleTo( ttile, OF_SCALEMODE_FIT );
-        timg.setPosition( ttile.x, ttile.y );
+        timg.setPosition( ttile.x + ( ttile.width - timg.width ) * 0.5f, ttile.y );
         ofSetColor( 255 );
         cam.tex.draw( timg );
-        if( cam.tracker ) cam.tracker->draw( timg );
+        // the poses the camera's thread found in it (not tracker->draw(): that thread is changing the tracker)
+        vector< Camera::Pose2D > tposes;
+        {
+            std::lock_guard< std::mutex > tlk( cam.mtx );
+            tposes = cam.poses2d;
+        }
+        const float ts = timg.width / std::max( 1.f, cam.tex.getWidth() );
+        auto tat = [&]( const glm::vec2& k ) { return glm::vec2( timg.x + k.x * ts, timg.y + k.y * ts ); };
+        // COCO body: face, arms, shoulders and hips, legs
+        static const int tcoco[][2] = { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 4 }, { 5, 7 }, { 7, 9 }, { 6, 8 }, { 8, 10 }, { 5, 6 }, { 5, 11 },
+                                        { 6, 12 }, { 11, 12 }, { 11, 13 }, { 13, 15 }, { 12, 14 }, { 14, 16 } };
+        for( auto& tp : tposes ) {
+            const ofColor tc = ofColor::fromHsb( ( tp.id * 53 ) % 255, 160, 255 );
+            if( !tp.skeleton ) {
+                // found, but no skeleton: sent as a box
+                ofNoFill();
+                ofSetLineWidth( 2.f );
+                ofSetColor( 255, 170, 60 );
+                ofDrawRectangle( tat( glm::vec2( tp.box.x, tp.box.y )), tp.box.width * ts, tp.box.height * ts );
+                ofSetLineWidth( 1.f );
+                ofFill();
+                ofDrawBitmapString( "box", tat( glm::vec2( tp.box.x, tp.box.y )) + glm::vec2( 4, 14 ));
+            }
+            auto good = [&]( int k ) { return k < (int)tp.keypoints.size() && k < (int)tp.scores.size() && tp.scores[k] >= mSkeleton.minScore; };
+            ofSetLineWidth( 2.f );
+            ofSetColor( tc );
+            for( auto& tb : tcoco ) if( good( tb[0] ) && good( tb[1] )) ofDrawLine( tat( tp.keypoints[tb[0]] ), tat( tp.keypoints[tb[1]] ));
+            ofSetLineWidth( 1.f );
+            for( int k = 0; k < (int)tp.keypoints.size(); k++ ) if( good( k )) ofDrawCircle( tat( tp.keypoints[k] ), k < 17 ? 3.f : 1.5f );
+        }
         ofSetColor( kCameraColors[cam.index] );
         ofDrawBitmapString( "camera " + ofToString( cam.index ) + ( cam.index > 0 && !cam.calibrated ? "  (not calibrated)" : "" ), timg.x + 6, timg.y + 14 );
     }
 
-    draw3d( mViewRect );
+    draw3d( mViewRect, false );
+    draw3d( ttop, true );
 
     gui.begin();
     guiSettings.windowPos = ofVec2f( 10, 10 );
@@ -513,8 +835,16 @@ void ofApp::draw() {
     ofxImGui::BeginWindow( "Femto Skeleton OSC", guiSettings, ImGuiWindowFlags_NoCollapse );
 
     int tfused = 0;
-    for( auto& t : mFusion.tracks() ) if( ofGetElapsedTimef() - t.lastSeen < 0.5 ) tfused++;
-    ImGui::Text( "people now %d   sent %zu   OSC messages %zu   app %.0f fps", tfused, mBodiesSent, mSkeleton.getNumSent(), ofGetFrameRate() );
+    size_t tsent = 0;
+    {
+        std::lock_guard< std::mutex > tlk( mFusionMutex );
+        for( auto& t : mFusion.tracks() ) if( ofGetElapsedTimef() - t.lastSeen < 0.5 ) tfused++;
+    }
+    {
+        std::lock_guard< std::mutex > tlk( mOscMutex );
+        tsent = mSkeleton.getNumSent();
+    }
+    ImGui::Text( "people now %d   sent %zu   OSC messages %zu   app %.0f fps", tfused, mBodiesSent.load(), tsent, ofGetFrameRate() );
     ImGui::Separator();
     if( ImGui::CollapsingHeader( params.getName().c_str(), ImGuiTreeNodeFlags_DefaultOpen )) addParams( params );
     if( ImGui::Button( "Apply OSC address" )) applyOsc();
@@ -522,12 +852,24 @@ void ofApp::draw() {
     if( ImGui::Button( "Floor from feet" )) floorFromFeet();
     ImGui::SameLine();
     if( ImGui::Button( "Save settings" )) saveSettings();
+    // record every connected camera (a file each), or stop
+    {
+        const bool trec = recordingAny();
+        float tsec = 0.f;
+        for( auto& tc : mCams ) if( tc->recorder.isRecording() ) tsec = std::max( tsec, (float)tc->recorder.getSeconds() );
+        if( trec ) ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0.85f, 0.15f, 0.12f, 1.f ));
+        if( ImGui::Button( trec ? ( "Stop recording  " + ofToString( tsec, 1 ) + " s  (r)" ).c_str() : "Record  (r)", ImVec2( -1, 0 ))) toggleRecording();
+        if( trec ) ImGui::PopStyleColor();
+    }
     ImGui::Separator();
     for( auto& c : mCams ) drawCameraPanel( *c );
     ImGui::Separator();
     ofxImGui::AddGroup( mFusion.params, guiSettings );
     ofxImGui::AddGroup( mSkeleton.getParams(), guiSettings );
-    if( mCams[0]->tracker ) {
+    if( useYolo && mCams[0]->yolo ) {
+        ImGui::Separator();
+        ofxImGui::AddGroup( mCams[0]->yolo->params, guiSettings );
+    } else if( !useYolo && mCams[0]->tracker ) {
         ImGui::Separator();
         ofxImGui::AddGroup( mCams[0]->tracker->getParams( "Pose tracker" ), guiSettings );
     }
@@ -550,24 +892,75 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
     const bool topen = aCam.enabled || aCam.index == 0;
     if( ImGui::CollapsingHeader( ( "Camera " + ofToString( aCam.index ) + ( aCam.index == 0 ? " (reference)" : "" )).c_str(), topen ? ImGuiTreeNodeFlags_DefaultOpen : 0 )) {
         addParams( aCam.params );
+        float tpitch, troll;
+        bool tleveled;
+        size_t tnbodies;
+        {
+            std::lock_guard< std::mutex > tlk( aCam.mtx );
+            tpitch = aCam.pitchDeg; troll = aCam.rollDeg; tleveled = aCam.leveled; tnbodies = aCam.bodies.size();
+        }
         if( aCam.device.isOpen() ) {
             ImGui::Text( "%s  %dx%d  frames %zu  to tracker %zu  %.0f fps", aCam.device.getSerial().c_str(), aCam.K.width, aCam.K.height,
-                         aCam.framesIn, aCam.toTracker, aCam.tracker ? aCam.tracker->getFps() : 0.0 );
+                         aCam.framesIn.load(), aCam.toTracker.load(), useYolo ? ( aCam.yolo ? aCam.yolo->getFps() : 0.f ) : ( aCam.tracker ? aCam.tracker->getFps() : 0.f ));
             if( aCam.device.hasImu() ) {
-                ImGui::Text( "accelerometer: pitch %.1f  roll %.1f degrees%s", aCam.pitchDeg, aCam.rollDeg, aCam.leveled ? "  (levelling)" : "" );
+                ImGui::Text( "accelerometer: pitch %.1f  roll %.1f degrees%s", tpitch, troll, tleveled ? "  (levelling)" : "" );
             } else {
                 ImGui::TextColored( ImVec4( 1.f, 0.8f, 0.3f, 1.f ), "no accelerometer reading: not levelled" );
             }
-            ImGui::Text( "bodies now %zu", aCam.bodies.size() );
+            ImGui::Text( "bodies now %zu", tnbodies );
+        } else if( aCam.player ) {
+            ImGui::Text( "recording  %dx%d  frames %zu  to tracker %zu", aCam.K.width, aCam.K.height, aCam.framesIn.load(), aCam.toTracker.load() );
+            ImGui::Text( "bodies now %zu", tnbodies );
         } else if( aCam.enabled ) {
             if( aCam.connecting.valid() ) ImGui::TextColored( ImVec4( 1.f, 0.8f, 0.3f, 1.f ), "connecting to %s ...", aCam.ip.get().c_str() );
             else ImGui::TextColored( ImVec4( 1.f, 0.5f, 0.3f, 1.f ), "no camera at %s", aCam.ip.get().c_str() );
         }
 
+        // Record what the camera gives (colour, depth, accelerometer), or play a recording in its place: the
+        // skeletons are found in it as in a live camera.
+        if( aCam.enabled && ImGui::TreeNode( "Record / play back" )) {
+            if( aCam.player ) {
+                auto& tp = *aCam.player;
+                ImGui::TextColored( ImVec4( 0.5f, 0.9f, 1.f, 1.f ), "playing %s", ofFilePath::getFileName( aCam.selectedTake ).c_str() );
+                const float tlen = (float)tp.getLength();
+                ImGui::ProgressBar( tlen > 0.f ? (float)tp.getPosition() / tlen : 0.f, ImVec2( -1, 0 ),
+                                    ( ofToString( tp.getPosition(), 1 ) + " / " + ofToString( tlen, 1 ) + " s" ).c_str() );
+                bool tloop = tp.loop;
+                if( ImGui::Checkbox( "Loop", &tloop )) tp.loop = tloop;
+                ImGui::SameLine();
+                float tspeed = tp.speed;
+                if( ImGui::SliderFloat( "Speed", &tspeed, 0.1f, 2.f, "%.2fx" )) tp.speed = tspeed;
+                if( ImGui::Button( "Back to the camera" )) stopTake( aCam );
+            } else if( aCam.device.isOpen() ) {
+                if( aCam.recorder.isRecording() ) {
+                    ImGui::TextColored( ImVec4( 1.f, 0.3f, 0.25f, 1.f ), "REC  %.1f s  %zu frames  %.0f MB%s", aCam.recorder.getSeconds(), aCam.recorder.getFramesWritten(),
+                                        aCam.recorder.getBytesWritten() / 1048576.0, aCam.recorder.getFramesDropped() ? ( "  (" + ofToString( aCam.recorder.getFramesDropped() ) + " passed over)" ).c_str() : "" );
+                    if( ImGui::Button( "Stop recording" )) { aCam.recorder.stop(); mTakesListedAt = -100.f; }
+                } else if( ImGui::Button( "Record" )) {
+                    const string tpath = "femto_takes/cam" + ofToString( aCam.index ) + "_" + ofGetTimestampString( "%Y%m%d_%H%M%S" ) + ".femto";
+                    if( aCam.recorder.start( ofToDataPath( tpath, true ), aCam.device.getSerial(), aCam.K )) aCam.selectedTake = tpath;
+                }
+            }
+            if( ofGetElapsedTimef() - mTakesListedAt > 2.f ) listTakes();
+            if( ImGui::ListBoxHeader( "##femtoTakes", ImVec2( -1, 110 ))) {
+                for( auto& t : mTakes ) if( ImGui::Selectable( ofFilePath::getFileName( t ).c_str(), t == aCam.selectedTake )) aCam.selectedTake = t;
+                ImGui::ListBoxFooter();
+            }
+            if( !aCam.selectedTake.empty() && !aCam.recorder.isRecording() && ImGui::Button( "Play it as this camera" )) playTake( aCam, aCam.selectedTake );
+            ImGui::TreePop();
+        }
+
         if( aCam.index > 0 ) {
             ImGui::Separator();
             // levelled by the accelerometer, both cameras differ only by a turn about the vertical and a shift
-            const bool tyaw = aCam.leveled && mCams[0]->leveled;
+            bool tref;
+            {
+                std::lock_guard< std::mutex > tlk( mCams[0]->mtx );
+                tref = mCams[0]->leveled;
+            }
+            const bool tyaw = tleveled && tref;
+            // the points and the calibration are shared with the output thread
+            std::lock_guard< std::mutex > tlk( aCam.mtx );
             if( aCam.calibrated ) {
                 ImGui::Text( "calibrated: rms %.1f cm over %d points", aCam.calRms * 100.f, aCam.calInliers );
             } else {
@@ -611,6 +1004,7 @@ static glm::vec3 displayOf( const glm::vec3& p ) { return glm::vec3( p.x, p.z, -
 
 void ofApp::floorFromFeet() {
     float tmax = -1e9f;
+    std::lock_guard< std::mutex > tlk( mFusionMutex );
     for( auto& t : mFusion.tracks() ) {
         if( ofGetElapsedTimef() - t.lastSeen > 0.5 ) continue;
         for( int j : { (int)FemtoSkeleton::FOOT_LEFT, (int)FemtoSkeleton::FOOT_RIGHT, (int)FemtoSkeleton::ANKLE_LEFT, (int)FemtoSkeleton::ANKLE_RIGHT } )
@@ -620,17 +1014,31 @@ void ofApp::floorFromFeet() {
 }
 
 //--------------------------------------------------------------
-void ofApp::draw3d( const ofRectangle& aView ) {
+void ofApp::draw3d( const ofRectangle& aView, bool aTopDown ) {
     if( aView.width < 20 || aView.height < 20 ) return;
     ofSetColor( 14, 15, 20 );
     ofDrawRectangle( aView );
 
-    const float taz = glm::radians( mViewAz ), tel = glm::radians( mViewEl );
-    mView.setNearClip( 0.05f );
-    mView.setFarClip( 100.f );
-    mView.setFov( 45.f );
-    mView.setPosition( mViewTarget + mViewDist * glm::vec3( std::cos( tel ) * std::cos( taz ), std::cos( tel ) * std::sin( taz ), std::sin( tel )));
-    mView.lookAt( mViewTarget, glm::vec3( 0.f, 0.f, 1.f ));
+    if( aTopDown ) {
+        // straight down from far off with a narrow field of view, so it is nearly flat: 7 m by 7.5 m of floor
+        // in front of camera 0, away from it up the view
+        const float tfov = 4.f;
+        const float thalf = std::max( 3.75f, 3.5f * aView.height / aView.width );
+        const float tdist = thalf / std::tan( glm::radians( tfov * 0.5f ));
+        const glm::vec3 ttarget( 0.f, 3.f, 0.f );
+        mView.setFov( tfov );
+        mView.setNearClip( tdist - 20.f );
+        mView.setFarClip( tdist + 20.f );
+        mView.setPosition( ttarget + glm::vec3( 0.f, 0.f, tdist ));
+        mView.lookAt( ttarget, glm::vec3( 0.f, 1.f, 0.f ));
+    } else {
+        const float taz = glm::radians( mViewAz ), tel = glm::radians( mViewEl );
+        mView.setNearClip( 0.05f );
+        mView.setFarClip( 100.f );
+        mView.setFov( 45.f );
+        mView.setPosition( mViewTarget + mViewDist * glm::vec3( std::cos( tel ) * std::cos( taz ), std::cos( tel ) * std::sin( taz ), std::sin( tel )));
+        mView.lookAt( mViewTarget, glm::vec3( 0.f, 0.f, 1.f ));
+    }
 
     // the bones of a body, as pairs of joints
     using F = FemtoSkeleton;
@@ -671,7 +1079,8 @@ void ofApp::draw3d( const ofRectangle& aView ) {
 
     // the cameras: a frustum each, where it is in the joined space, in its own colour
     for( auto& c : mCams ) {
-        const Camera& cam = *c;
+        Camera& cam = *c;
+        std::lock_guard< std::mutex > tlk( cam.mtx );
         if( !cam.active() || ( cam.index > 0 && !cam.calibrated ) || cam.K.fx <= 0.f ) continue;
         const glm::mat3 tm = cam.leveled ? cam.levelM : glm::mat3( 1.f );
         auto corner = [&]( float sx, float sy ) {
@@ -691,13 +1100,30 @@ void ofApp::draw3d( const ofRectangle& aView ) {
 
     // what each camera sees, thin, in its colour; then the merged people, bold
     for( auto& c : mCams ) {
-        const Camera& cam = *c;
+        Camera& cam = *c;
+        std::lock_guard< std::mutex > tlk( cam.mtx );
         if( !cam.active() || ( cam.index > 0 && !cam.calibrated ) || ofGetElapsedTimef() - cam.bodiesTime > 0.3 ) continue;
         ofSetColor( kCameraColors[cam.index], 150 );
         for( auto& b : cam.bodies ) drawBody( b, cam.toRef, 0.012f );
+        // the people sent as boxes
+        ofSetColor( 255, 170, 60 );
+        for( auto& tb : cam.boxes ) {
+            glm::vec3 tv[8];
+            for( int k = 0; k < 8; k++ ) {
+                const glm::vec3 to( k & 1 ? 0.5f : -0.5f, k & 2 ? 0.5f : -0.5f, k & 4 ? 0.5f : -0.5f );
+                tv[k] = displayOf( glm::vec3( cam.toRef * glm::vec4( tb.centre + to * tb.size, 1.f )));
+            }
+            for( int k = 0; k < 8; k++ )
+                for( int a : { 1, 2, 4 } ) if( !( k & a )) ofDrawLine( tv[k], tv[k | a] );
+        }
+    }
+    vector< SkeletonFusion::Track > ttracks;
+    {
+        std::lock_guard< std::mutex > tlk( mFusionMutex );
+        ttracks = mFusion.tracks();
     }
     ofSetLineWidth( 3.f );
-    for( auto& t : mFusion.tracks() ) {
+    for( auto& t : ttracks ) {
         if( ofGetElapsedTimef() - t.lastSeen > 0.5 ) continue;
         ofSetColor( ofColor::fromHsb( ( t.id * 53 ) % 255, 90, 255 ));
         drawBody( t.body, glm::mat4( 1.f ), 0.025f );
@@ -708,7 +1134,7 @@ void ofApp::draw3d( const ofRectangle& aView ) {
     mView.end();
 
     // ids next to the people
-    for( auto& t : mFusion.tracks() ) {
+    for( auto& t : ttracks ) {
         if( ofGetElapsedTimef() - t.lastSeen > 0.5 ) continue;
         glm::vec3 tc;
         if( !SkeletonFusion::centreOf( t.body, tc )) continue;
@@ -717,7 +1143,8 @@ void ofApp::draw3d( const ofRectangle& aView ) {
         ofDrawBitmapString( "person " + ofToString( t.id ) + ( t.cameras > 1 ? "  (" + ofToString( t.cameras ) + " cameras)" : "" ), ts.x + 10, ts.y );
     }
     ofSetColor( 170 );
-    ofDrawBitmapString( "the joined space, in camera 0's frame   drag: orbit   wheel: zoom", aView.x + 8, aView.y + 14 );
+    ofDrawBitmapString( aTopDown ? "from above (grid 1 m, camera 0 at the bottom)" : "perspective   drag: orbit   wheel: zoom",
+                        aView.x + 8, aView.y + 14 );
 }
 
 //--------------------------------------------------------------
@@ -740,9 +1167,14 @@ void ofApp::mouseScrolled( int x, int y, float, float scrollY ) {
 //--------------------------------------------------------------
 void ofApp::exit() {
     saveSettings();
+    mOutRunning = false;
+    mOutCv.notify_one();
+    if( mOutThread.joinable() ) mOutThread.join();
     for( auto& c : mCams ) {
         if( c->connecting.valid() ) c->connecting.wait();
-        if( c->tracker ) c->tracker->stop();
+        stopCamera( *c );
+        c->recorder.stop();
+        if( c->player ) c->player->close();
         c->device.close();
     }
 }
@@ -751,4 +1183,5 @@ void ofApp::exit() {
 void ofApp::keyPressed( int key ) {
     if( ImGui::GetIO().WantTextInput ) return;
     if( key == ' ' ) bSend = !bSend;
+    if( key == 'r' ) toggleRecording();
 }

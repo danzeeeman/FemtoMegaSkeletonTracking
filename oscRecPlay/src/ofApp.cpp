@@ -16,6 +16,26 @@ void ofApp::setup() {
 }
 
 //--------------------------------------------------------------
+// Every recording: those in bin/data/takes and any older ones in bin/data itself, newest first.
+void ofApp::listTakes() {
+    takesListedAt = ofGetElapsedTimef();
+    std::vector<std::pair<std::time_t, std::string>> found;
+    for( std::string dir : { std::string( "takes" ), std::string( "" ) } ) {
+        ofDirectory d( dir.empty() ? ofToDataPath( "", true ) : ofToDataPath( dir, true ));
+        if( !d.exists() ) continue;
+        d.allowExt( "oscrec" );
+        d.listDir();
+        for( auto& f : d ) {
+            const std::string rel = dir.empty() ? f.getFileName() : dir + "/" + f.getFileName();
+            found.push_back( { std::filesystem::last_write_time( f.path() ).time_since_epoch().count(), rel } );
+        }
+    }
+    std::sort( found.begin(), found.end(), []( auto& a, auto& b ) { return a.first > b.first; } );
+    takes.clear();
+    for( auto& f : found ) takes.push_back( f.second );
+}
+
+//--------------------------------------------------------------
 void ofApp::loadSettings() {
     if( !ofFile::doesFileExist( "settings.json" )) return;
     ofJson j = ofLoadJson( "settings.json" );
@@ -56,6 +76,122 @@ void ofApp::noteAddresses( const char* data, size_t n ) {
         std::string id = oscrec::bodyId( a );
         if( !id.empty() ) bodyIds.insert( id );
     });
+    const float now = ofGetElapsedTimef();
+    oscrec::forEachMessage( data, n, [&]( const char* m, size_t len ) {
+        std::string id, joint;
+        float xyz[3];
+        bool tracked = false;
+        if( !oscrec::parseJoint( m, len, id, joint, xyz, tracked )) return;
+        const int j = bodyjoints::fromName( joint );
+        if( j < 0 ) return;
+        Pose& p = poses[id];
+        p.p[j] = glm::vec3( xyz[0], xyz[1], xyz[2] );
+        p.seen[j] = tracked;
+        p.t = now;
+    });
+}
+
+//--------------------------------------------------------------
+namespace {
+// A person's colour from their id, and the left side tinted blue, the right red.
+ofColor colourOf( const std::string& id ) {
+    return ofColor::fromHsb( ( std::hash<std::string>{}( id ) * 47 ) % 255, 150, 255 );
+}
+ofColor tint( const ofColor& c, int joint ) {
+    const int s = bodyjoints::side( joint );
+    return s < 0 ? c.getLerped( ofColor( 80, 150, 255 ), 0.5f ) : s > 0 ? c.getLerped( ofColor( 255, 90, 80 ), 0.5f ) : c;
+}
+
+// A panel's frame, a grid every half metre (every metre brighter), and its title.
+void drawPanel( const ofRectangle& r, const std::string& title, const std::function<glm::vec2( float, float )>& toScreen,
+                float x0, float x1, float y0, float y1 ) {
+    ofSetColor( 16, 17, 20 );
+    ofDrawRectangle( r );
+    for( float v = std::ceil( x0 * 2.f ) / 2.f; v <= x1; v += 0.5f ) {
+        ofSetColor( 255, std::fmod( std::abs( v ), 1.f ) < 0.01f ? 34 : 14 );
+        ofDrawLine( toScreen( v, y0 ), toScreen( v, y1 ));
+    }
+    for( float v = std::ceil( y0 * 2.f ) / 2.f; v <= y1; v += 0.5f ) {
+        ofSetColor( 255, std::fmod( std::abs( v ), 1.f ) < 0.01f ? 34 : 14 );
+        ofDrawLine( toScreen( x0, v ), toScreen( x1, v ));
+    }
+    ofNoFill();
+    ofSetColor( 70, 74, 82 );
+    ofDrawRectangle( r );
+    ofFill();
+    ofSetColor( 200 );
+    ofDrawBitmapString( title, r.x + 8, r.y + 16 );
+}
+}
+
+// As the sensor sees them: its left on the left (x is negated), y up, the sensor at the cross.
+void ofApp::drawFront( const ofRectangle& r ) {
+    const float x0 = -2.5f, x1 = 2.5f, y0 = -1.4f, y1 = 1.4f;
+    const float s = std::min( r.width / ( x1 - x0 ), r.height / ( y1 - y0 ));
+    const glm::vec2 c = r.getCenter();
+    auto toScreen = [&]( float x, float y ) { return glm::vec2( c.x - x * s, c.y - y * s ); };
+    drawPanel( r, "as the sensor sees it (grid 0.5 m, cross: the sensor)", [&]( float a, float b ) { return toScreen( -a, b ); }, x0, x1, y0, y1 );
+    ofSetColor( 255, 230, 120 );
+    ofDrawLine( c - glm::vec2( 8, 0 ), c + glm::vec2( 8, 0 ));
+    ofDrawLine( c - glm::vec2( 0, 8 ), c + glm::vec2( 0, 8 ));
+
+    std::lock_guard<std::mutex> lock( statusMutex );
+    const float now = ofGetElapsedTimef();
+    for( auto& [id, p] : poses ) {
+        if( now - p.t > 0.5f ) continue;
+        const ofColor col = colourOf( id );
+        ofSetLineWidth( 3 );
+        for( const auto& [a, b] : bodyjoints::bones() ) {
+            if( !p.seen[a] || !p.seen[b] ) continue;
+            ofSetColor( tint( col, b ));
+            ofDrawLine( toScreen( p.p[a].x, p.p[a].y ), toScreen( p.p[b].x, p.p[b].y ));
+        }
+        ofSetLineWidth( 1 );
+        for( int j = 0; j < bodyjoints::Count; j++ ) {
+            if( !p.seen[j] ) continue;
+            ofSetColor( tint( col, j ));
+            ofDrawCircle( toScreen( p.p[j].x, p.p[j].y ), j == bodyjoints::Head ? 0.1f * s : 3.f );
+        }
+        const int top = p.seen[bodyjoints::Head] ? bodyjoints::Head : bodyjoints::SpineShoulder;
+        ofSetColor( col );
+        const glm::vec2 lp = toScreen( p.p[top].x, p.p[top].y ) + glm::vec2( 0.12f * s, -0.12f * s );
+        ofDrawBitmapString( id + "  " + ofToString( -p.p[bodyjoints::SpineMid].z, 2 ) + " m", lp );
+    }
+}
+
+// From above: the sensor at the bottom looking up the panel, its field of view drawn in.
+void ofApp::drawTop( const ofRectangle& r ) {
+    const float x0 = -3.f, x1 = 3.f, d0 = -0.3f, d1 = 5.5f;
+    const float s = std::min( r.width / ( x1 - x0 ), r.height / ( d1 - d0 ));
+    const glm::vec2 o( r.getCenter().x, r.getBottom() + d0 * s );   // the sensor
+    auto toScreen = [&]( float x, float d ) { return glm::vec2( o.x - x * s, o.y - d * s ); };
+    drawPanel( r, "from above (sensor at the bottom, looking up)", [&]( float a, float b ) { return toScreen( -a, b ); }, x0, x1, d0, d1 );
+    // the colour camera's field of view, 81 degrees across
+    const float half = std::tan( glm::radians( 40.5f )) * d1;
+    ofSetColor( 255, 230, 120, 90 );
+    ofDrawLine( o, toScreen( half, d1 ));
+    ofDrawLine( o, toScreen( -half, d1 ));
+    ofSetColor( 255, 230, 120 );
+    ofDrawCircle( o, 4 );
+
+    std::lock_guard<std::mutex> lock( statusMutex );
+    const float now = ofGetElapsedTimef();
+    for( auto& [id, p] : poses ) {
+        if( now - p.t > 0.5f ) continue;
+        const ofColor col = colourOf( id );
+        ofSetLineWidth( 3 );
+        for( const auto& [a, b] : bodyjoints::bones() ) {
+            if( !p.seen[a] || !p.seen[b] ) continue;
+            ofSetColor( tint( col, b ));
+            ofDrawLine( toScreen( p.p[a].x, -p.p[a].z ), toScreen( p.p[b].x, -p.p[b].z ));
+        }
+        ofSetLineWidth( 1 );
+        for( int j = 0; j < bodyjoints::Count; j++ ) {
+            if( !p.seen[j] ) continue;
+            ofSetColor( tint( col, j ));
+            ofDrawCircle( toScreen( p.p[j].x, -p.p[j].z ), j == bodyjoints::Head ? 0.1f * s : 3.f );
+        }
+    }
 }
 
 //--------------------------------------------------------------
@@ -184,8 +320,13 @@ void ofApp::startRecording() {
         std::lock_guard<std::mutex> lock( statusMutex );
         lastAddress.clear();
         bodyIds.clear();
+        poses.clear();
     }
     saveSettings();
+    // a file of its own for every take, so none is lost to the next one
+    ofDirectory::createDirectory( ofToDataPath( "takes", true ), false, true );
+    std::snprintf( filePath, sizeof( filePath ), "%s", ( "takes/take_" + ofGetTimestampString( "%Y%m%d_%H%M%S" ) + ".oscrec" ).c_str() );
+    takesListedAt = -100.f;
     std::string path = ofToDataPath( filePath, true );
     stopFlag = false;
     workerDone = false;
@@ -215,6 +356,7 @@ void ofApp::startPlaying() {
         std::lock_guard<std::mutex> lock( statusMutex );
         lastAddress.clear();
         bodyIds.clear();
+        poses.clear();
     }
     saveSettings();
     stopFlag = false;
@@ -239,24 +381,47 @@ void ofApp::update() {
 }
 
 //--------------------------------------------------------------
+// A port: typed in, numbers only, no +/- buttons, kept to 1..65535.
+static void portInput( const char* aLabel, int& aPort ) {
+    if( ImGui::InputInt( aLabel, &aPort, 0, 0 )) aPort = ofClamp( aPort, 1, 65535 );
+}
+
+//--------------------------------------------------------------
 void ofApp::draw() {
+    // the skeletons going by, right of the controls: as the sensor sees them above, from above below
+    const float panelW = 430.f, gap = 10.f;
+    const float vx = panelW + 2.f * gap, vw = ofGetWidth() - vx - gap, vh = ( ofGetHeight() - 3.f * gap ) * 0.5f;
+    drawFront( ofRectangle( vx, gap, vw, vh ));
+    drawTop( ofRectangle( vx, 2.f * gap + vh, vw, vh ));
+
     gui.begin();
-    ImGui::SetNextWindowPos( ImVec2( 10, 10 ), ImGuiCond_Always );
-    ImGui::SetNextWindowSize( ImVec2( ofGetWidth() - 20, ofGetHeight() - 20 ), ImGuiCond_Always );
+    ImGui::SetNextWindowPos( ImVec2( gap, gap ), ImGuiCond_Always );
+    ImGui::SetNextWindowSize( ImVec2( panelW, ofGetHeight() - 2.f * gap ), ImGuiCond_Always );
     ImGui::Begin( "OSC Record Play", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove );
 
-    ImGui::InputText( "file (in bin/data)", filePath, sizeof( filePath ));
+    // the recordings: click one to play it
+    if( ofGetElapsedTimef() - takesListedAt > 2.f ) listTakes();
+    ImGui::Text( "Recordings (%zu), bin/data/takes", takes.size() );
+    if( ImGui::ListBoxHeader( "##takes", ImVec2( -1, 170 ))) {
+        for( auto& t : takes ) {
+            const bool tsel = t == filePath;
+            if( ImGui::Selectable( t.c_str(), tsel ) && mode != Mode::Recording ) std::snprintf( filePath, sizeof( filePath ), "%s", t.c_str() );
+            if( tsel && ImGui::IsWindowAppearing() ) ImGui::SetScrollHereY();
+        }
+        ImGui::ListBoxFooter();
+    }
+    ImGui::Text( "selected: %s", filePath );
     ImGui::Separator();
 
     ImGui::TextUnformatted( "Record" );
-    ImGui::InputInt( "listen on port", &recPort );
+    portInput( "listen on port", recPort );
     ImGui::Checkbox( "forward to", &forward );
     ImGui::SameLine();
     ImGui::SetNextItemWidth( 140 );
     ImGui::InputText( "##fwdHost", fwdHost, sizeof( fwdHost ));
     ImGui::SameLine();
     ImGui::SetNextItemWidth( 90 );
-    ImGui::InputInt( "##fwdPort", &fwdPort, 0 );
+    portInput( "##fwdPort", fwdPort );
     if( mode == Mode::Recording ) {
         if( ImGui::Button( "Stop recording", ImVec2( 160, 0 ))) stop();
     } else {
@@ -267,7 +432,7 @@ void ofApp::draw() {
     ImGui::TextUnformatted( "Play" );
     ImGui::SetNextItemWidth( 140 );
     ImGui::InputText( "host", playHost, sizeof( playHost ));
-    ImGui::InputInt( "port", &playPort );
+    portInput( "port", playPort );
     ImGui::SliderFloat( "speed", &speed, 0.1f, 4.f, "%.2fx" );
     ImGui::Checkbox( "loop", &loop );
     if( mode == Mode::Playing ) {
