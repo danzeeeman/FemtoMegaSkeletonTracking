@@ -1,11 +1,12 @@
 #include "ofApp.h"
+#include "OperatorTheme.h"
 #include <unistd.h>
 #include "ofxRtmModelLoader.h"
 #include <random>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace {
-const ofColor kCameraColors[ofApp::kMaxCameras] = { ofColor( 90, 220, 120 ), ofColor( 255, 160, 60 ), ofColor( 80, 200, 255 ), ofColor( 240, 100, 220 ) };
+// each camera's colour: OperatorTheme.h
 
 // The matrix that turns a point in the camera's frame into the levelled frame (y down along gravity, z the way the
 // camera faces, flattened onto the horizon), from the unit vector `aUp` (which way is up, camera frame).
@@ -22,11 +23,14 @@ bool levelMatrix( const glm::vec3& aUp, glm::mat3& aOut ) {
 glm::vec3 vec3Of( const ofVec3f& v ) { return glm::vec3( v.x, v.y, v.z ); }
 
 // A group's parameters without a header of their own (ofxImGui::AddGroup adds a tree node, and has no case for
-// strings, so an address could not be typed in).
+// strings, so an address could not be typed in). On / off settings are toggle buttons, groups within are trees.
 void addParams( ofParameterGroup& aGroup ) {
     for( auto& p : aGroup ) {
-        if( auto ts = std::dynamic_pointer_cast< ofParameter< string > >( p )) ofxImGui::AddParameter( *ts );
-        else if( auto tb = std::dynamic_pointer_cast< ofParameter< bool > >( p )) ofxImGui::AddParameter( *tb );
+        if( auto tg = std::dynamic_pointer_cast< ofParameterGroup >( p )) {
+            if( ImGui::TreeNode( tg->getName().c_str() )) { addParams( *tg ); ImGui::TreePop(); }
+        }
+        else if( auto ts = std::dynamic_pointer_cast< ofParameter< string > >( p )) ofxImGui::AddParameter( *ts );
+        else if( auto tb = std::dynamic_pointer_cast< ofParameter< bool > >( p )) optheme::toggle( *tb );
         else if( auto ti = std::dynamic_pointer_cast< ofParameter< int > >( p )) {
             // a port is typed in, not dragged to
             if( ofIsStringInString( ofToLower( ti->getName() ), "port" )) {
@@ -115,9 +119,10 @@ void ofApp::setup() {
     ofDisableArbTex();
     ofSetFrameRate( 60 );
     ofSetVerticalSync( false );
-    ofBackground( 24 );
+    ofBackground( optheme::bg );
 
     gui.setup();
+    optheme::applyImGui();
 
     params.setName( "Output" );
     params.add( oscHost.set( "OSC host", "127.0.0.1" ));
@@ -168,6 +173,9 @@ void ofApp::setup() {
 
     mOutRunning = true;
     mOutThread = std::thread( &ofApp::outputLoop, this );
+
+    // every Femto there is: those found are started (not in the demo, which has no cameras)
+    if( !mDemo ) mFinder.start( 3.f );
 }
 
 //--------------------------------------------------------------
@@ -176,7 +184,7 @@ void ofApp::setupCamera( Camera& aCam ) {
     aCam.params.add( aCam.enabled.set( "Enabled", aCam.index == 0 ));
     aCam.params.add( aCam.ip.set( "Address", "192.168.1." + ofToString( 10 + aCam.index )));
     aCam.params.add( aCam.levelFromImu.set( "Level from accelerometer", true ));
-    aCam.params.add( aCam.invertImu.set( "Accelerometer reads gravity, not up", false ));
+    aCam.params.add( aCam.invertImu.set( "Camera Upside Down", false ));
 }
 
 //--------------------------------------------------------------
@@ -342,6 +350,8 @@ void ofApp::update() {
         mCams[0]->recorder.start( ofToDataPath( tpath, true ), mCams[0]->device.getSerial(), mCams[0]->K );
     }
 
+    adoptFound();
+
     for( auto& c : mCams ) {
         Camera& cam = *c;
         if( !cam.enabled ) {
@@ -389,6 +399,45 @@ void ofApp::update() {
         updateDemo();
         wakeOutput();
     }
+}
+
+//--------------------------------------------------------------
+// The cameras the search found, started: one already given a place (its address in a camera's settings) is started
+// there unless it was stopped with its button; a new one takes the first camera that is not in use.
+void ofApp::adoptFound() {
+    if( ofGetElapsedTimef() - mAdoptedAt < 1.f ) return;
+    mAdoptedAt = ofGetElapsedTimef();
+    for( auto& f : mFinder.getFound() ) {
+        if( f.ip.empty() ) continue;   // on USB: the cameras are opened by address here
+        Camera* tplace = nullptr;
+        for( auto& c : mCams ) if( c->ip.get() == f.ip ) { tplace = c.get(); break; }
+        if( !tplace ) {
+            for( auto& c : mCams ) {
+                if( !c->enabled && !c->userStopped && !c->device.isOpen() && !c->player ) { tplace = c.get(); break; }
+            }
+            if( !tplace ) continue;   // all four in use
+            tplace->ip = f.ip;
+        }
+        if( !tplace->enabled && !tplace->userStopped ) {
+            tplace->enabled = true;
+            tplace->lastTry = -100.f;
+            ofLogNotice( "FemtoSkeletonOsc" ) << "found " << f.name << " " << f.serial << " at " << f.ip << ": camera " << tplace->index;
+        }
+    }
+}
+
+void ofApp::startCameraByUser( Camera& aCam ) {
+    aCam.userStopped = false;
+    aCam.enabled = true;
+    aCam.lastTry = -100.f;
+}
+
+// update() lets the camera go once it is not enabled; a recording playing in its place stops too
+void ofApp::stopCameraByUser( Camera& aCam ) {
+    aCam.userStopped = true;
+    aCam.recorder.stop();
+    if( aCam.player ) stopTake( aCam );
+    aCam.enabled = false;
 }
 
 //--------------------------------------------------------------
@@ -777,11 +826,13 @@ void ofApp::draw() {
     // space in 3D below, in perspective (orbits with the mouse) and from above
     ofRectangle tfull( 450, 10, ofGetWidth() - 460, ofGetHeight() - 20 );
     const bool tcams = !tshown.empty();
-    ofRectangle tarea( tfull.x, tfull.y, tfull.width, tcams ? tfull.height * 0.3f : 0.f );
-    const float tbelow = tarea.getBottom() + ( tcams ? 6.f : 0.f );
+    // the 3D views on top, the camera pictures in a row below them
+    const float tcamH = tcams ? tfull.height * 0.3f : 0.f;
+    ofRectangle tarea( tfull.x, tfull.getBottom() - tcamH, tfull.width, tcamH );
+    const float tviewsH = tfull.height - tcamH - ( tcams ? 6.f : 0.f );
     const float thalf = ( tfull.width - 6.f ) * 0.5f;
-    mViewRect = ofRectangle( tfull.x, tbelow, thalf, tfull.getBottom() - tbelow );
-    const ofRectangle ttop( mViewRect.getRight() + 6.f, tbelow, thalf, mViewRect.height );
+    mViewRect = ofRectangle( tfull.x, tfull.y, thalf, tviewsH );
+    const ofRectangle ttop( mViewRect.getRight() + 6.f, tfull.y, thalf, tviewsH );
     const int tcols = std::max( 1, (int)tshown.size() );
     const float tw = tarea.width / tcols;
     for( size_t i = 0; i < tshown.size(); i++ ) {
@@ -809,7 +860,7 @@ void ofApp::draw() {
                 // found, but no skeleton: sent as a box
                 ofNoFill();
                 ofSetLineWidth( 2.f );
-                ofSetColor( 255, 170, 60 );
+                ofSetColor( optheme::boxPerson );
                 ofDrawRectangle( tat( glm::vec2( tp.box.x, tp.box.y )), tp.box.width * ts, tp.box.height * ts );
                 ofSetLineWidth( 1.f );
                 ofFill();
@@ -822,17 +873,36 @@ void ofApp::draw() {
             ofSetLineWidth( 1.f );
             for( int k = 0; k < (int)tp.keypoints.size(); k++ ) if( good( k )) ofDrawCircle( tat( tp.keypoints[k] ), k < 17 ? 3.f : 1.5f );
         }
-        ofSetColor( kCameraColors[cam.index] );
+        ofSetColor( optheme::camera( cam.index ) );
         ofDrawBitmapString( "camera " + ofToString( cam.index ) + ( cam.index > 0 && !cam.calibrated ? "  (not calibrated)" : "" ), timg.x + 6, timg.y + 14 );
     }
 
     draw3d( mViewRect, false );
     draw3d( ttop, true );
 
+    // the controls, down the left: the settings above, the cameras below
     gui.begin();
-    guiSettings.windowPos = ofVec2f( 10, 10 );
-    guiSettings.windowSize = ofVec2f( 430, ofGetHeight() - 20 );
-    ofxImGui::BeginWindow( "Femto Skeleton OSC", guiSettings, ImGuiWindowFlags_NoCollapse );
+    const float tgap = 10.f, tpanelW = 430.f, tpanelH = ( ofGetHeight() - 3.f * tgap ) * 0.5f;
+    drawSettingsWindow( ofRectangle( tgap, tgap, tpanelW, tpanelH ));
+    drawCamerasWindow( ofRectangle( tgap, 2.f * tgap + tpanelH, tpanelW, tpanelH ));
+    gui.end();
+
+    // FEMTO_SHOT=<file.png>: save what is on screen after a few seconds, then quit
+    static const string tshot = ofGetEnv( "FEMTO_SHOT" );
+    if( !tshot.empty() && ofGetElapsedTimef() > 6.f ) {
+        ofImage timg;
+        timg.grabScreen( 0, 0, ofGetWidth(), ofGetHeight() );
+        timg.save( tshot );
+        ofExit( 0 );
+    }
+}
+
+//--------------------------------------------------------------
+// Output, recording, and how people are found, merged and sent.
+void ofApp::drawSettingsWindow( const ofRectangle& aArea ) {
+    guiSettings.windowPos = aArea.getPosition();
+    guiSettings.windowSize = glm::vec2( aArea.width, aArea.height );
+    ofxImGui::BeginWindow( "Settings", guiSettings, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize );
 
     int tfused = 0;
     size_t tsent = 0;
@@ -857,41 +927,91 @@ void ofApp::draw() {
         const bool trec = recordingAny();
         float tsec = 0.f;
         for( auto& tc : mCams ) if( tc->recorder.isRecording() ) tsec = std::max( tsec, (float)tc->recorder.getSeconds() );
-        if( trec ) ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0.85f, 0.15f, 0.12f, 1.f ));
-        if( ImGui::Button( trec ? ( "Stop recording  " + ofToString( tsec, 1 ) + " s  (r)" ).c_str() : "Record  (r)", ImVec2( -1, 0 ))) toggleRecording();
-        if( trec ) ImGui::PopStyleColor();
+        if( trec ) {
+            if( optheme::actionButton(( "Stop recording  " + ofToString( tsec, 1 ) + " s  (r)" ).c_str(), optheme::dangerFill )) toggleRecording();
+        } else if( ImGui::Button( "Record  (r)", ImVec2( -1, 0 ))) {
+            toggleRecording();
+        }
     }
-    ImGui::Separator();
-    for( auto& c : mCams ) drawCameraPanel( *c );
-    ImGui::Separator();
-    ofxImGui::AddGroup( mFusion.params, guiSettings );
-    ofxImGui::AddGroup( mSkeleton.getParams(), guiSettings );
+    if( ImGui::CollapsingHeader( mFusion.params.getName().c_str() )) addParams( mFusion.params );
+    if( ImGui::CollapsingHeader( mSkeleton.getParams().getName().c_str() )) addParams( mSkeleton.getParams() );
     if( useYolo && mCams[0]->yolo ) {
-        ImGui::Separator();
-        ofxImGui::AddGroup( mCams[0]->yolo->params, guiSettings );
+        if( ImGui::CollapsingHeader( mCams[0]->yolo->params.getName().c_str() )) addParams( mCams[0]->yolo->params );
     } else if( !useYolo && mCams[0]->tracker ) {
-        ImGui::Separator();
-        ofxImGui::AddGroup( mCams[0]->tracker->getParams( "Pose tracker" ), guiSettings );
+        auto& tparams = mCams[0]->tracker->getParams( "Pose tracker" );
+        if( ImGui::CollapsingHeader( tparams.getName().c_str() )) addParams( tparams );
     }
     ofxImGui::EndWindow( guiSettings );
-    gui.end();
+}
 
-    // FEMTO_SHOT=<file.png>: save what is on screen after a few seconds, then quit
-    static const string tshot = ofGetEnv( "FEMTO_SHOT" );
-    if( !tshot.empty() && ofGetElapsedTimef() > 6.f ) {
-        ofImage timg;
-        timg.grabScreen( 0, 0, ofGetWidth(), ofGetHeight() );
-        timg.save( tshot );
-        ofExit( 0 );
+//--------------------------------------------------------------
+// The cameras: what the search found, a section for each camera that is open (live, or playing a recording), a line
+// for each starting or stopped, and a camera to add by its address.
+void ofApp::drawCamerasWindow( const ofRectangle& aArea ) {
+    guiSettings.windowPos = aArea.getPosition();
+    guiSettings.windowSize = glm::vec2( aArea.width, aArea.height );
+    ofxImGui::BeginWindow( "Cameras", guiSettings, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize );
+
+    const auto tfound = mFinder.getFound();
+    string tlist;
+    for( auto& f : tfound ) tlist += ( tlist.empty() ? "" : ", " ) + f.serial + ( f.ip.empty() ? " (USB)" : " " + f.ip );
+    ImGui::PushStyleColor( ImGuiCol_Text, optheme::im( optheme::textMuted ));
+    if( tfound.empty() ) ImGui::TextWrapped( mFinder.sinceSearch() > 1e8f ? "looking for cameras..." : "no cameras found on the network yet" );
+    else ImGui::TextWrapped( "found: %s", tlist.c_str() );
+    ImGui::PopStyleColor();
+
+    // open: their sections
+    for( auto& c : mCams ) if( c->device.isOpen() || c->player ) drawCameraPanel( *c );
+
+    // starting, or stopped: a line each
+    for( auto& c : mCams ) {
+        Camera& cam = *c;
+        if( cam.device.isOpen() || cam.player ) continue;
+        if( !cam.enabled && !cam.userStopped ) continue;
+        ImGui::PushID( cam.index );
+        ImGui::AlignTextToFramePadding();
+        if( cam.enabled ) {
+            ImGui::TextColored( optheme::statusWarning(), "Camera %d  %s  %s", cam.index, cam.ip.get().c_str(), cam.connecting.valid() ? "connecting..." : "not answering yet" );
+            ImGui::SameLine( aArea.width - 80.f );
+            if( ImGui::Button( "Stop", ImVec2( 60.f, 0 ))) stopCameraByUser( cam );
+        } else {
+            ImGui::TextColored( optheme::im( optheme::textMuted ), "Camera %d  %s  stopped", cam.index, cam.ip.get().c_str() );
+            ImGui::SameLine( aArea.width - 80.f );
+            if( ImGui::Button( "Start", ImVec2( 60.f, 0 ))) startCameraByUser( cam );
+        }
+        ImGui::PopID();
     }
+
+    // one the search cannot see (another subnet, say), by its address
+    ImGui::Separator();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted( "add a camera" );
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth( 150.f );
+    ImGui::InputText( "##addIp", mAddIp, sizeof( mAddIp ));
+    ImGui::SameLine();
+    if( ImGui::Button( "Add" ) && mAddIp[0] ) {
+        Camera* tplace = nullptr;
+        for( auto& c : mCams ) if( c->ip.get() == mAddIp ) { tplace = c.get(); break; }
+        if( !tplace ) for( auto& c : mCams ) if( !c->enabled && !c->device.isOpen() && !c->player ) { tplace = c.get(); break; }
+        if( tplace ) {
+            tplace->ip = string( mAddIp );
+            startCameraByUser( *tplace );
+            mAddIp[0] = 0;
+        }
+    }
+    ofxImGui::EndWindow( guiSettings );
 }
 
 //--------------------------------------------------------------
 void ofApp::drawCameraPanel( Camera& aCam ) {
     ImGui::PushID( aCam.index );
-    const bool topen = aCam.enabled || aCam.index == 0;
-    if( ImGui::CollapsingHeader( ( "Camera " + ofToString( aCam.index ) + ( aCam.index == 0 ? " (reference)" : "" )).c_str(), topen ? ImGuiTreeNodeFlags_DefaultOpen : 0 )) {
-        addParams( aCam.params );
+    const string tname = "Camera " + ofToString( aCam.index ) + ( aCam.index == 0 ? " (reference)" : "" ) + "  " + ( aCam.player ? string( "recording" ) : aCam.device.getSerial() );
+    if( ImGui::CollapsingHeader(( tname + "###cam" ).c_str(), ImGuiTreeNodeFlags_DefaultOpen )) {
+        if( optheme::actionButton( "Stop this camera", optheme::dangerFill )) stopCameraByUser( aCam );
+        ImGui::TextColored( optheme::im( optheme::textMuted ), "address %s", aCam.ip.get().c_str() );
+        optheme::toggle( aCam.levelFromImu );
+        optheme::toggle( aCam.invertImu );
         float tpitch, troll;
         bool tleveled;
         size_t tnbodies;
@@ -905,15 +1025,15 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
             if( aCam.device.hasImu() ) {
                 ImGui::Text( "accelerometer: pitch %.1f  roll %.1f degrees%s", tpitch, troll, tleveled ? "  (levelling)" : "" );
             } else {
-                ImGui::TextColored( ImVec4( 1.f, 0.8f, 0.3f, 1.f ), "no accelerometer reading: not levelled" );
+                ImGui::TextColored( optheme::statusWarning(), "no accelerometer reading: not levelled" );
             }
             ImGui::Text( "bodies now %zu", tnbodies );
         } else if( aCam.player ) {
             ImGui::Text( "recording  %dx%d  frames %zu  to tracker %zu", aCam.K.width, aCam.K.height, aCam.framesIn.load(), aCam.toTracker.load() );
             ImGui::Text( "bodies now %zu", tnbodies );
         } else if( aCam.enabled ) {
-            if( aCam.connecting.valid() ) ImGui::TextColored( ImVec4( 1.f, 0.8f, 0.3f, 1.f ), "connecting to %s ...", aCam.ip.get().c_str() );
-            else ImGui::TextColored( ImVec4( 1.f, 0.5f, 0.3f, 1.f ), "no camera at %s", aCam.ip.get().c_str() );
+            if( aCam.connecting.valid() ) ImGui::TextColored( optheme::statusWarning(), "connecting to %s ...", aCam.ip.get().c_str() );
+            else ImGui::TextColored( optheme::statusWarning(), "no camera at %s", aCam.ip.get().c_str() );
         }
 
         // Record what the camera gives (colour, depth, accelerometer), or play a recording in its place: the
@@ -921,19 +1041,19 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
         if( aCam.enabled && ImGui::TreeNode( "Record / play back" )) {
             if( aCam.player ) {
                 auto& tp = *aCam.player;
-                ImGui::TextColored( ImVec4( 0.5f, 0.9f, 1.f, 1.f ), "playing %s", ofFilePath::getFileName( aCam.selectedTake ).c_str() );
+                ImGui::TextColored( optheme::statusInfo(), "playing %s", ofFilePath::getFileName( aCam.selectedTake ).c_str() );
                 const float tlen = (float)tp.getLength();
                 ImGui::ProgressBar( tlen > 0.f ? (float)tp.getPosition() / tlen : 0.f, ImVec2( -1, 0 ),
                                     ( ofToString( tp.getPosition(), 1 ) + " / " + ofToString( tlen, 1 ) + " s" ).c_str() );
                 bool tloop = tp.loop;
-                if( ImGui::Checkbox( "Loop", &tloop )) tp.loop = tloop;
+                if( optheme::toggle( "Loop", tloop, 110.f )) tp.loop = tloop;
                 ImGui::SameLine();
                 float tspeed = tp.speed;
                 if( ImGui::SliderFloat( "Speed", &tspeed, 0.1f, 2.f, "%.2fx" )) tp.speed = tspeed;
                 if( ImGui::Button( "Back to the camera" )) stopTake( aCam );
             } else if( aCam.device.isOpen() ) {
                 if( aCam.recorder.isRecording() ) {
-                    ImGui::TextColored( ImVec4( 1.f, 0.3f, 0.25f, 1.f ), "REC  %.1f s  %zu frames  %.0f MB%s", aCam.recorder.getSeconds(), aCam.recorder.getFramesWritten(),
+                    ImGui::TextColored( optheme::statusDanger(), "REC  %.1f s  %zu frames  %.0f MB%s", aCam.recorder.getSeconds(), aCam.recorder.getFramesWritten(),
                                         aCam.recorder.getBytesWritten() / 1048576.0, aCam.recorder.getFramesDropped() ? ( "  (" + ofToString( aCam.recorder.getFramesDropped() ) + " passed over)" ).c_str() : "" );
                     if( ImGui::Button( "Stop recording" )) { aCam.recorder.stop(); mTakesListedAt = -100.f; }
                 } else if( ImGui::Button( "Record" )) {
@@ -964,9 +1084,9 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
             if( aCam.calibrated ) {
                 ImGui::Text( "calibrated: rms %.1f cm over %d points", aCam.calRms * 100.f, aCam.calInliers );
             } else {
-                ImGui::TextColored( ImVec4( 1.f, 0.5f, 0.3f, 1.f ), "not calibrated: its people are not sent" );
+                ImGui::TextColored( optheme::statusWarning(), "not calibrated: its people are not sent" );
             }
-            ImGui::Checkbox( "Collect points", &aCam.collecting );
+            optheme::toggle( "Collect points", aCam.collecting, 190.f );
             ImGui::SameLine();
             ImGui::Text( "%zu points, spread %.2f m", aCam.cal.size(), aCam.cal.spread( tyaw ));
             if( aCam.collecting ) ImGui::TextWrapped( "Walk about where this camera and camera 0 can both see you, alone in view." );
@@ -1016,16 +1136,40 @@ void ofApp::floorFromFeet() {
 //--------------------------------------------------------------
 void ofApp::draw3d( const ofRectangle& aView, bool aTopDown ) {
     if( aView.width < 20 || aView.height < 20 ) return;
-    ofSetColor( 14, 15, 20 );
+    ofSetColor( optheme::bg );
     ofDrawRectangle( aView );
 
     if( aTopDown ) {
-        // straight down from far off with a narrow field of view, so it is nearly flat: 7 m by 7.5 m of floor
-        // in front of camera 0, away from it up the view
+        // straight down from far off with a narrow field of view, so it is nearly flat; away from camera 0 up the
+        // view. It takes in the floor in front of camera 0 (7 m by 7.5 m) and every calibrated camera with 3 m of
+        // its view, with a margin, so as cameras are placed it zooms out to keep them all in; the framing eases.
+        glm::vec2 tlo( -3.5f, -0.5f ), thi( 3.5f, 7.f );
+        for( auto& c : mCams ) {
+            Camera& cam = *c;
+            if( cam.index == 0 || !cam.active() || !cam.calibrated ) continue;
+            glm::mat4 ttoRef;
+            {
+                std::lock_guard< std::mutex > tlk( cam.mtx );
+                ttoRef = cam.toRef;
+            }
+            for( const glm::vec3& tp : { glm::vec3( 0.f ), glm::vec3( -1.5f, 0.f, 3.f ), glm::vec3( 1.5f, 0.f, 3.f ) } ) {
+                const glm::vec3 td = displayOf( glm::vec3( ttoRef * glm::vec4( tp, 1.f )));
+                tlo = glm::min( tlo, glm::vec2( td ));
+                thi = glm::max( thi, glm::vec2( td ));
+            }
+        }
+        tlo -= glm::vec2( 0.75f );
+        thi += glm::vec2( 0.75f );
+        const glm::vec2 tcentreWant = ( tlo + thi ) * 0.5f;
+        const float thalfWant = std::max(( thi.y - tlo.y ) * 0.5f, ( thi.x - tlo.x ) * 0.5f * aView.height / aView.width );
+        const float tk = 1.f - std::exp( -ofGetLastFrameTime() / 0.15f );
+        if( mTopHalf <= 0.f ) { mTopCentre = tcentreWant; mTopHalf = thalfWant; }
+        mTopCentre += ( tcentreWant - mTopCentre ) * tk;
+        mTopHalf += ( thalfWant - mTopHalf ) * tk;
         const float tfov = 4.f;
-        const float thalf = std::max( 3.75f, 3.5f * aView.height / aView.width );
+        const float thalf = mTopHalf;
         const float tdist = thalf / std::tan( glm::radians( tfov * 0.5f ));
-        const glm::vec3 ttarget( 0.f, 3.f, 0.f );
+        const glm::vec3 ttarget( mTopCentre.x, mTopCentre.y, 0.f );
         mView.setFov( tfov );
         mView.setNearClip( tdist - 20.f );
         mView.setFarClip( tdist + 20.f );
@@ -1065,16 +1209,16 @@ void ofApp::draw3d( const ofRectangle& aView, bool aTopDown ) {
 
     // the floor: a grid of 1 m squares, below camera 0
     const float tfz = -floorBelow;
-    ofSetColor( 60, 64, 80 );
+    ofSetColor( optheme::grid );
     for( int i = -6; i <= 6; i++ ) {
         ofDrawLine( (float)i, -1.f, tfz, (float)i, 11.f, tfz );
         ofDrawLine( -6.f, i + 5.f, tfz, 6.f, i + 5.f, tfz );
     }
     // camera 0's axes: x red, forward green, up blue
     ofSetLineWidth( 2.f );
-    ofSetColor( 255, 80, 80 );  ofDrawLine( 0.f, 0.f, 0.f, 0.5f, 0.f, 0.f );
-    ofSetColor( 80, 255, 80 );  ofDrawLine( 0.f, 0.f, 0.f, 0.f, 0.5f, 0.f );
-    ofSetColor( 80, 140, 255 ); ofDrawLine( 0.f, 0.f, 0.f, 0.f, 0.f, 0.5f );
+    ofSetColor( optheme::axisX ); ofDrawLine( 0.f, 0.f, 0.f, 0.5f, 0.f, 0.f );
+    ofSetColor( optheme::axisY ); ofDrawLine( 0.f, 0.f, 0.f, 0.f, 0.5f, 0.f );
+    ofSetColor( optheme::axisZ ); ofDrawLine( 0.f, 0.f, 0.f, 0.f, 0.f, 0.5f );
     ofSetLineWidth( 1.f );
 
     // the cameras: a frustum each, where it is in the joined space, in its own colour
@@ -1090,7 +1234,7 @@ void ofApp::draw3d( const ofRectangle& aView, bool aTopDown ) {
         };
         const glm::vec3 to = displayOf( glm::vec3( cam.toRef * glm::vec4( 0.f, 0.f, 0.f, 1.f )));
         const glm::vec3 tc[4] = { corner( -1.f, -1.f ), corner( 1.f, -1.f ), corner( 1.f, 1.f ), corner( -1.f, 1.f ) };
-        ofSetColor( kCameraColors[cam.index] );
+        ofSetColor( optheme::camera( cam.index ) );
         for( int k = 0; k < 4; k++ ) {
             ofDrawLine( to, tc[k] );
             ofDrawLine( tc[k], tc[( k + 1 ) % 4] );
@@ -1103,10 +1247,10 @@ void ofApp::draw3d( const ofRectangle& aView, bool aTopDown ) {
         Camera& cam = *c;
         std::lock_guard< std::mutex > tlk( cam.mtx );
         if( !cam.active() || ( cam.index > 0 && !cam.calibrated ) || ofGetElapsedTimef() - cam.bodiesTime > 0.3 ) continue;
-        ofSetColor( kCameraColors[cam.index], 150 );
+        ofSetColor( optheme::camera( cam.index ), 150 );
         for( auto& b : cam.bodies ) drawBody( b, cam.toRef, 0.012f );
         // the people sent as boxes
-        ofSetColor( 255, 170, 60 );
+        ofSetColor( optheme::boxPerson );
         for( auto& tb : cam.boxes ) {
             glm::vec3 tv[8];
             for( int k = 0; k < 8; k++ ) {
@@ -1142,7 +1286,7 @@ void ofApp::draw3d( const ofRectangle& aView, bool aTopDown ) {
         ofSetColor( 255 );
         ofDrawBitmapString( "person " + ofToString( t.id ) + ( t.cameras > 1 ? "  (" + ofToString( t.cameras ) + " cameras)" : "" ), ts.x + 10, ts.y );
     }
-    ofSetColor( 170 );
+    ofSetColor( optheme::textMuted );
     ofDrawBitmapString( aTopDown ? "from above (grid 1 m, camera 0 at the bottom)" : "perspective   drag: orbit   wheel: zoom",
                         aView.x + 8, aView.y + 14 );
 }
@@ -1167,6 +1311,7 @@ void ofApp::mouseScrolled( int x, int y, float, float scrollY ) {
 //--------------------------------------------------------------
 void ofApp::exit() {
     saveSettings();
+    mFinder.stop();
     mOutRunning = false;
     mOutCv.notify_one();
     if( mOutThread.joinable() ) mOutThread.join();

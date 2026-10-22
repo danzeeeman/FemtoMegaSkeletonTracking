@@ -1,4 +1,5 @@
 #include "ofApp.h"
+#include "OperatorTheme.h"
 #include <chrono>
 
 using Clock = std::chrono::steady_clock;
@@ -10,8 +11,9 @@ static double since( Clock::time_point t0 ) {
 //--------------------------------------------------------------
 void ofApp::setup() {
     ofSetFrameRate( 60 );
-    ofSetBackgroundColor( 24 );
+    ofSetBackgroundColor( optheme::bg );
     gui.setup();
+    optheme::applyImGui();
     loadSettings();
 }
 
@@ -99,27 +101,27 @@ ofColor colourOf( const std::string& id ) {
 }
 ofColor tint( const ofColor& c, int joint ) {
     const int s = bodyjoints::side( joint );
-    return s < 0 ? c.getLerped( ofColor( 80, 150, 255 ), 0.5f ) : s > 0 ? c.getLerped( ofColor( 255, 90, 80 ), 0.5f ) : c;
+    return optheme::sided( c, s );
 }
 
 // A panel's frame, a grid every half metre (every metre brighter), and its title.
 void drawPanel( const ofRectangle& r, const std::string& title, const std::function<glm::vec2( float, float )>& toScreen,
                 float x0, float x1, float y0, float y1 ) {
-    ofSetColor( 16, 17, 20 );
+    ofSetColor( optheme::bg );
     ofDrawRectangle( r );
     for( float v = std::ceil( x0 * 2.f ) / 2.f; v <= x1; v += 0.5f ) {
-        ofSetColor( 255, std::fmod( std::abs( v ), 1.f ) < 0.01f ? 34 : 14 );
+        ofSetColor( std::fmod( std::abs( v ), 1.f ) < 0.01f ? optheme::grid : optheme::gridFine );
         ofDrawLine( toScreen( v, y0 ), toScreen( v, y1 ));
     }
     for( float v = std::ceil( y0 * 2.f ) / 2.f; v <= y1; v += 0.5f ) {
-        ofSetColor( 255, std::fmod( std::abs( v ), 1.f ) < 0.01f ? 34 : 14 );
+        ofSetColor( std::fmod( std::abs( v ), 1.f ) < 0.01f ? optheme::grid : optheme::gridFine );
         ofDrawLine( toScreen( x0, v ), toScreen( x1, v ));
     }
     ofNoFill();
-    ofSetColor( 70, 74, 82 );
+    ofSetColor( optheme::border );
     ofDrawRectangle( r );
     ofFill();
-    ofSetColor( 200 );
+    ofSetColor( optheme::textMuted );
     ofDrawBitmapString( title, r.x + 8, r.y + 16 );
 }
 }
@@ -131,7 +133,7 @@ void ofApp::drawFront( const ofRectangle& r ) {
     const glm::vec2 c = r.getCenter();
     auto toScreen = [&]( float x, float y ) { return glm::vec2( c.x - x * s, c.y - y * s ); };
     drawPanel( r, "as the sensor sees it (grid 0.5 m, cross: the sensor)", [&]( float a, float b ) { return toScreen( -a, b ); }, x0, x1, y0, y1 );
-    ofSetColor( 255, 230, 120 );
+    ofSetColor( optheme::camera( 0 ));
     ofDrawLine( c - glm::vec2( 8, 0 ), c + glm::vec2( 8, 0 ));
     ofDrawLine( c - glm::vec2( 0, 8 ), c + glm::vec2( 0, 8 ));
 
@@ -168,10 +170,10 @@ void ofApp::drawTop( const ofRectangle& r ) {
     drawPanel( r, "from above (sensor at the bottom, looking up)", [&]( float a, float b ) { return toScreen( -a, b ); }, x0, x1, d0, d1 );
     // the colour camera's field of view, 81 degrees across
     const float half = std::tan( glm::radians( 40.5f )) * d1;
-    ofSetColor( 255, 230, 120, 90 );
+    ofSetColor( optheme::camera( 0 ), 90 );
     ofDrawLine( o, toScreen( half, d1 ));
     ofDrawLine( o, toScreen( -half, d1 ));
-    ofSetColor( 255, 230, 120 );
+    ofSetColor( optheme::camera( 0 ));
     ofDrawCircle( o, 4 );
 
     std::lock_guard<std::mutex> lock( statusMutex );
@@ -381,6 +383,9 @@ void ofApp::update() {
 }
 
 //--------------------------------------------------------------
+// The width of what starts an address row ("forward to", "send to"), so the fields after it line up.
+static const float kRowLabelW = 130.f;
+
 // A port: typed in, numbers only, no +/- buttons, kept to 1..65535.
 static void portInput( const char* aLabel, int& aPort ) {
     if( ImGui::InputInt( aLabel, &aPort, 0, 0 )) aPort = ofClamp( aPort, 1, 65535 );
@@ -415,7 +420,7 @@ void ofApp::draw() {
 
     ImGui::TextUnformatted( "Record" );
     portInput( "listen on port", recPort );
-    ImGui::Checkbox( "forward to", &forward );
+    optheme::toggle( "forward to", forward, kRowLabelW );
     ImGui::SameLine();
     ImGui::SetNextItemWidth( 140 );
     ImGui::InputText( "##fwdHost", fwdHost, sizeof( fwdHost ));
@@ -423,22 +428,29 @@ void ofApp::draw() {
     ImGui::SetNextItemWidth( 90 );
     portInput( "##fwdPort", fwdPort );
     if( mode == Mode::Recording ) {
-        if( ImGui::Button( "Stop recording", ImVec2( 160, 0 ))) stop();
+        if( optheme::actionButton( "Stop recording", optheme::dangerFill )) stop();
     } else {
-        if( ImGui::Button( "Record", ImVec2( 160, 0 ))) startRecording();
+        if( ImGui::Button( "Record", ImVec2( -1, 0 ))) startRecording();
     }
     ImGui::Separator();
 
     ImGui::TextUnformatted( "Play" );
+    // the address on one line, its fields lined up with "forward to"'s
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted( "send to" );
+    ImGui::SameLine( 0.f, 0.f );
+    ImGui::SetCursorPosX( ImGui::GetStyle().WindowPadding.x + kRowLabelW + ImGui::GetStyle().ItemSpacing.x );
     ImGui::SetNextItemWidth( 140 );
-    ImGui::InputText( "host", playHost, sizeof( playHost ));
-    portInput( "port", playPort );
+    ImGui::InputText( "##playHost", playHost, sizeof( playHost ));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth( 90 );
+    portInput( "##playPort", playPort );
     ImGui::SliderFloat( "speed", &speed, 0.1f, 4.f, "%.2fx" );
-    ImGui::Checkbox( "loop", &loop );
+    optheme::toggle( "loop", loop );
     if( mode == Mode::Playing ) {
-        if( ImGui::Button( "Stop playing", ImVec2( 160, 0 ))) stop();
+        if( optheme::actionButton( "Stop playing", optheme::info )) stop();
     } else {
-        if( ImGui::Button( "Play", ImVec2( 160, 0 ))) startPlaying();
+        if( ImGui::Button( "Play", ImVec2( -1, 0 ))) startPlaying();
     }
     ImGui::Separator();
 

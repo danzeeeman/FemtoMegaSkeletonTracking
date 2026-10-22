@@ -35,6 +35,7 @@
 #include "ofxImGui.h"
 #include "ofxOrbbecDevice.h"
 #include "ofxOrbbecRecording.h"
+#include "ofxOrbbecFinder.h"
 #include "ofxRtmPoseTracker.h"
 #include "ofxYoloPose.h"
 #include "FemtoSkeleton.h"
@@ -69,7 +70,7 @@ private:
         ofParameter< bool > enabled;
         ofParameter< string > ip;
         ofParameter< bool > levelFromImu;     // pitch and roll from the accelerometer, not the sliders
-        ofParameter< bool > invertImu;        // the accelerometer reads gravity, not up
+        ofParameter< bool > invertImu;        // "Camera Upside Down": the accelerometer's up taken the other way (it reads gravity, not up)
 
         ofxOrbbecDevice device;
         bool fake = false;                      // FEMTO_DEMO: stands in for a camera
@@ -77,6 +78,7 @@ private:
         std::shared_ptr< ofxOrbbecPlayer > player;
         ofxOrbbecRecorder recorder;             // the camera's frames to a .femto file, while recording
         string selectedTake;                    // the recording chosen in the panel
+        bool userStopped = false;               // stopped with its button: not started again by the search (this session)
         bool active() const { return fake || device.isOpen() || ( player && player->isOpen() ); }
         std::shared_ptr< ofxRtmPoseTracker > tracker;   // set on the app's thread, under mtx; then only the worker runs it
         std::shared_ptr< ofxYoloPose > yolo;            // the same, for YOLO11-pose
@@ -140,6 +142,16 @@ private:
     void wakeOutput();
     void collectCalibration( Camera& aCam, const vector< FemtoSkeleton::Body >& aRefBodies, double aRefTime );
     void drawCameraPanel( Camera& aCam );
+    void drawSettingsWindow( const ofRectangle& aArea );
+    void drawCamerasWindow( const ofRectangle& aArea );
+    void startCameraByUser( Camera& aCam );
+    void stopCameraByUser( Camera& aCam );
+
+    // every Femto on the network (and USB), looked for every few seconds; those found are started
+    ofxOrbbecFinder mFinder;
+    void adoptFound();
+    float mAdoptedAt = -100.f;
+    char mAddIp[64] = "";
     void applyOsc();
     void updateDemo();
     void draw3d( const ofRectangle& aView, bool aTopDown );
@@ -177,6 +189,8 @@ private:
     float mViewAz = -110.f, mViewEl = 22.f, mViewDist = 6.f;
     glm::vec3 mViewTarget{ 0.f, 2.5f, -0.8f };
     ofRectangle mViewRect;
+    glm::vec2 mTopCentre{ 0.f, 3.f };  // the top-down view's framing (display x, y), eased toward what it must take in
+    float mTopHalf = 0.f;
     int mLastMx = 0, mLastMy = 0;
     ofParameter< float > floorBelow;   // how far the floor is below camera 0 (m)
 
