@@ -146,3 +146,6 @@ OF_ROOT = ../../..
 # Uncomment/comment below to switch between C++11 and C++17 ( or newer ). On macOS C++17 needs 10.15 or above.
 # export MAC_OS_MIN_VERSION = 10.15
 # export MAC_OS_CPP_VER = -std=c++17
+
+# The OF makefile build skips openssl.xcframework (Xcode links it); curl/ofURLFileLoader need it
+PROJECT_LDFLAGS += $(OF_ROOT)/libs/openssl/lib/macos/openssl.xcframework/macos-arm64_x86_64/openssl.a

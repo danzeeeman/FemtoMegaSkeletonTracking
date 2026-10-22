@@ -20,6 +20,17 @@ bool levelMatrix( const glm::vec3& aUp, glm::mat3& aOut ) {
 
 glm::vec3 vec3Of( const ofVec3f& v ) { return glm::vec3( v.x, v.y, v.z ); }
 
+// A group's parameters without a header of their own (ofxImGui::AddGroup adds a tree node, and has no case for
+// strings, so an address could not be typed in).
+void addParams( ofParameterGroup& aGroup ) {
+    for( auto& p : aGroup ) {
+        if( auto ts = std::dynamic_pointer_cast< ofParameter< string > >( p )) ofxImGui::AddParameter( *ts );
+        else if( auto tb = std::dynamic_pointer_cast< ofParameter< bool > >( p )) ofxImGui::AddParameter( *tb );
+        else if( auto ti = std::dynamic_pointer_cast< ofParameter< int > >( p )) ofxImGui::AddParameter( *ti );
+        else if( auto tf = std::dynamic_pointer_cast< ofParameter< float > >( p )) ofxImGui::AddParameter( *tf );
+    }
+}
+
 // FEMTO_SELFTEST=1: no cameras needed. Two virtual cameras watch a person walk about; camera 1 is placed with a
 // known pose, with joint noise. Checks that calibration finds the pose (levelled and not) and that fusion joins
 // the two views into one person.
@@ -275,7 +286,11 @@ void ofApp::update() {
             if( cam.device.isOpen() && !cam.connecting.valid() ) { cam.device.close(); cam.bodies.clear(); }
             continue;
         }
-        if( !cam.tracker ) setupTracker( cam );
+        // a failed load (no network, say) is a download each time: try again every 30 s, not every frame
+        if( !cam.tracker && ofGetElapsedTimef() - cam.lastTrackerTry > 30.f ) {
+            cam.lastTrackerTry = ofGetElapsedTimef();
+            setupTracker( cam );
+        }
         if( cam.connecting.valid() ) {
             if( cam.connecting.wait_for( std::chrono::seconds( 0 )) != std::future_status::ready ) continue;
             if( cam.connecting.get() ) {
@@ -501,7 +516,7 @@ void ofApp::draw() {
     for( auto& t : mFusion.tracks() ) if( ofGetElapsedTimef() - t.lastSeen < 0.5 ) tfused++;
     ImGui::Text( "people now %d   sent %zu   OSC messages %zu   app %.0f fps", tfused, mBodiesSent, mSkeleton.getNumSent(), ofGetFrameRate() );
     ImGui::Separator();
-    ofxImGui::AddGroup( params, guiSettings );
+    if( ImGui::CollapsingHeader( params.getName().c_str(), ImGuiTreeNodeFlags_DefaultOpen )) addParams( params );
     if( ImGui::Button( "Apply OSC address" )) applyOsc();
     ImGui::SameLine();
     if( ImGui::Button( "Floor from feet" )) floorFromFeet();
@@ -534,7 +549,7 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
     ImGui::PushID( aCam.index );
     const bool topen = aCam.enabled || aCam.index == 0;
     if( ImGui::CollapsingHeader( ( "Camera " + ofToString( aCam.index ) + ( aCam.index == 0 ? " (reference)" : "" )).c_str(), topen ? ImGuiTreeNodeFlags_DefaultOpen : 0 )) {
-        ofxImGui::AddGroup( aCam.params, guiSettings );
+        addParams( aCam.params );
         if( aCam.device.isOpen() ) {
             ImGui::Text( "%s  %dx%d  frames %zu  to tracker %zu  %.0f fps", aCam.device.getSerial().c_str(), aCam.K.width, aCam.K.height,
                          aCam.framesIn, aCam.toTracker, aCam.tracker ? aCam.tracker->getFps() : 0.0 );

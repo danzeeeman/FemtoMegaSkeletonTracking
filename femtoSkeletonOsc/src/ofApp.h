@@ -66,6 +66,7 @@ private:
         std::shared_ptr< ofxRtmPoseTracker > tracker;
         std::future< bool > connecting;
         float lastTry = -100.f;
+        float lastTrackerTry = -100.f;          // the models failed to load: not again until a while later
 
         ofPixels color;
         ofShortPixels depth;
