@@ -32,15 +32,18 @@ echoNarcissus's 3D scene (the white arms, black frame, navy floor and pool) is t
 | token | hex | means | used for |
 |---|---|---|---|
 | `ok` | `#22C55E` | live, go | Start moving |
-| `active` | `#3B82F6` | the interactive accent | checkmarks, sliders, selection, focus |
+| `active` | `#3B82F6` | the interactive accent | sliders, selection, focus |
+| `activeFill` | `#1D4ED8` | the same, under text | a toggle that is on (white text, 6.7:1) |
 | `warning` | `#F59E0B` | in between, partial | connecting, no camera yet, not calibrated, no accelerometer, a person seen only as a box |
-| `danger` | `#EF4444` | stopping, recording, faults | REC, the safety gate (as text) |
-| `dangerFill` | `#B91C1C` | the same, as a button | Stop recording, Stop this camera, Hold still (white text, 6.5:1) |
+| `danger` | `#F87171` | stopping, recording, faults | REC, the safety gate (as text) |
+| `dangerFill` | `#A84848` | the same, as a button: a soft brick red | Stop recording, Stop this camera, Hold still (white text, 5.4:1) |
 | `info` | `#38BDF8` | playing back | Stop playing, "playing …" |
 
 Primary actions are full-width buttons filled with their status colour: `optheme::actionButton(label, colour)`. Its text is white or dark, whichever contrasts more with the fill (`textOn()`). Red buttons use `dangerFill`: dark text on the brighter red only just reached 4.5:1 and was hard to read in the small font.
 
-On / off settings are **toggle buttons**, not checkboxes: `optheme::toggle(label, value)` or `optheme::toggle(ofParameter<bool>&)`. On is filled with `active` and dark text, off is plain with muted text. The label ends in "on" or "off", so the state does not rest on colour alone. An action's two states (Record / Stop recording, Play / Stop playing, Start moving / Hold still) are the same size and in the same place, so the layout does not jump when it changes.
+On / off settings are **toggle buttons**, not checkboxes: `optheme::toggle(label, value)` or `optheme::toggle(ofParameter<bool>&)`. On is filled with `activeFill` and white text, off is plain with muted text. The label ends in "on" or "off", so the state does not rest on colour alone. A setting whose on is a hazard passes `dangerFill` as the on colour: echoNarcissus's "Real arm armed" shows red while armed.
+
+A press always answers: saving shows a green "saved" for 3 s. A step that is hard to undo asks first: "Forget calibration" turns into a red "Really forget?" for 3 s, and only a second press forgets. Status lines carry their meaning in colour as well as words: OSC quiet or not listening, EGM waiting and IK out of reach are `warning`, EGM connected and OSC flowing are `ok`, simulation is muted. An action's two states (Record / Stop recording, Play / Stop playing, Start moving / Hold still) are the same size and in the same place, so the layout does not jump when it changes.
 
 ## What is drawn
 
@@ -70,5 +73,8 @@ What the apps did before this, and what changed:
 5. **Left/right tints** were written out separately in each app. Now one `sided()`.
 6. **Primary actions** (Record, Start moving / Hold still) used hand-picked greens and reds, different sizes per state. Now `actionButton` in the status colours, full width.
 7. **oscRecPlay's Play address** was two stacked fields while "forward to" was one row. Now both are one row, the fields lined up.
+
+8. **echoNarcissus's checkboxes** are toggles now, its status lines are coloured, and its Engage min / max sliders push each other so they cannot cross.
+9. **Reds softened** (October 2026): `danger` `#EF4444` → `#F87171` (text was 4.2:1 on panel, now 5.7:1), `dangerFill` `#B91C1C` → `#A84848`, a brick red that is less loud and still 5.4:1 under white.
 
 Still open: the font (above); text drawn over the 3D views is the bitmap font at one size.

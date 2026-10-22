@@ -201,6 +201,7 @@ void ofApp::saveSettings() {
     ofXml txml;
     ofSerialize( txml, mAllParams );
     txml.save( "settings.xml" );
+    mSettingsSavedAt = ofGetElapsedTimef();
 }
 
 //--------------------------------------------------------------
@@ -922,6 +923,8 @@ void ofApp::drawSettingsWindow( const ofRectangle& aArea ) {
     if( ImGui::Button( "Floor from feet" )) floorFromFeet();
     ImGui::SameLine();
     if( ImGui::Button( "Save settings" )) saveSettings();
+    // a moment's confirmation, so a press is not left wondering
+    if( ofGetElapsedTimef() - mSettingsSavedAt < 3.f ) { ImGui::SameLine(); ImGui::TextColored( optheme::statusOk(), "saved" ); }
     // record every connected camera (a file each), or stop
     {
         const bool trec = recordingAny();
@@ -1055,8 +1058,8 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
                 if( aCam.recorder.isRecording() ) {
                     ImGui::TextColored( optheme::statusDanger(), "REC  %.1f s  %zu frames  %.0f MB%s", aCam.recorder.getSeconds(), aCam.recorder.getFramesWritten(),
                                         aCam.recorder.getBytesWritten() / 1048576.0, aCam.recorder.getFramesDropped() ? ( "  (" + ofToString( aCam.recorder.getFramesDropped() ) + " passed over)" ).c_str() : "" );
-                    if( ImGui::Button( "Stop recording" )) { aCam.recorder.stop(); mTakesListedAt = -100.f; }
-                } else if( ImGui::Button( "Record" )) {
+                    if( optheme::actionButton( "Stop recording", optheme::dangerFill )) { aCam.recorder.stop(); mTakesListedAt = -100.f; }
+                } else if( ImGui::Button( "Record", ImVec2( -1, 0 ))) {
                     const string tpath = "femto_takes/cam" + ofToString( aCam.index ) + "_" + ofGetTimestampString( "%Y%m%d_%H%M%S" ) + ".femto";
                     if( aCam.recorder.start( ofToDataPath( tpath, true ), aCam.device.getSerial(), aCam.K )) aCam.selectedTake = tpath;
                 }
@@ -1105,10 +1108,24 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
             ImGui::SameLine();
             if( ImGui::Button( "Clear points" )) aCam.cal.clear();
             ImGui::SameLine();
-            if( ImGui::Button( "Forget calibration" )) {
-                aCam.calibrated = false;
-                aCam.toRef = glm::mat4( 1.f );
-                saveCalibration();
+            // a calibration takes a walk to make again: the first press asks, a second within 3 s forgets
+            const bool tasking = ofGetElapsedTimef() - aCam.forgetAskedAt < 3.f;
+            if( tasking ) {
+                ImGui::PushStyleColor( ImGuiCol_Button, optheme::im( optheme::dangerFill ));
+                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, optheme::im( optheme::dangerFill.getLerped( optheme::text, 0.12f )));
+                ImGui::PushStyleColor( ImGuiCol_Text, optheme::im( optheme::textOn( optheme::dangerFill )));
+            }
+            const bool tforget = ImGui::Button( tasking ? "Really forget?###forget" : "Forget calibration###forget" );
+            if( tasking ) ImGui::PopStyleColor( 3 );
+            if( tforget ) {
+                if( tasking ) {
+                    aCam.calibrated = false;
+                    aCam.toRef = glm::mat4( 1.f );
+                    aCam.forgetAskedAt = -100.f;
+                    saveCalibration();
+                } else {
+                    aCam.forgetAskedAt = ofGetElapsedTimef();
+                }
             }
             if( !aCam.calMessage.empty() ) ImGui::TextWrapped( "%s", aCam.calMessage.c_str() );
             if( !tyaw ) ImGui::TextWrapped( "(a camera is not levelled by its accelerometer: solving for a full 3D pose, which needs more movement)" );

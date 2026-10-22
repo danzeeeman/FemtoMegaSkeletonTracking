@@ -123,6 +123,7 @@ private:
         double calTakenAt = -1.0;               // bodiesTime of the last pair added to `cal`, so a pair is added once
         Calibration cal;
         string calMessage;
+        float forgetAskedAt = -100.f;   // "Forget calibration" pressed once: asking to be sure
     };
 
     void setupCamera( Camera& aCam );
@@ -136,6 +137,7 @@ private:
     void listTakes();
     vector< string > mTakes;                // the .femto recordings in bin/data/femto_takes, newest first
     float mTakesListedAt = -100.f;
+    float mSettingsSavedAt = -100.f;   // for the "saved" note
     void stopCamera( Camera& aCam );
     void cameraLoop( Camera& aCam );
     void outputLoop();

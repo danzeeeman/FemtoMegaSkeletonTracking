@@ -24,9 +24,10 @@ inline const ofColor gridFine   = hex( 0xFFFFFF, 12 );   // half metres
 // --- status: one meaning each ---
 inline const ofColor ok         = hex( 0x22C55E );   // live, connected, start
 inline const ofColor active     = hex( 0x3B82F6 );   // the interactive accent: selection, sliders, focus
+inline const ofColor activeFill = hex( 0x1D4ED8 );   // the same, under text: a toggle that is on (white text on it, 6.7:1)
 inline const ofColor warning    = hex( 0xF59E0B );   // connecting, partial (a person seen only as a box), not calibrated
-inline const ofColor danger     = hex( 0xEF4444 );   // recording, faults, hold: as text
-inline const ofColor dangerFill = hex( 0xB91C1C );   // the same, as a button's fill (white text on it, 6.5:1)
+inline const ofColor danger     = hex( 0xF87171 );   // recording, faults, hold: as text (5.7:1 on panel)
+inline const ofColor dangerFill = hex( 0xA84848 );   // the same, as a button's fill: a soft brick red (white text on it, 5.4:1)
 inline const ofColor info       = hex( 0x38BDF8 );   // playing back a recording
 
 // --- what is drawn ---
@@ -139,13 +140,14 @@ inline bool actionButton( const char* aLabel, const ofColor& aFill ) {
 }
 
 // An on / off setting as a push button (in place of a checkbox): on is filled with the accent, off is plain, and
-// the label says which, so it does not rest on colour alone. The id stays the same whichever state it shows.
-inline bool toggle( const char* aLabel, bool& aValue, float aWidth = -1.f ) {
+// the label says which, so it does not rest on colour alone. The id stays the same whichever state it shows. A setting
+// whose on is a hazard (a real arm armed) passes dangerFill for aOnFill.
+inline bool toggle( const char* aLabel, bool& aValue, float aWidth = -1.f, const ofColor& aOnFill = activeFill ) {
     const std::string tlabel = std::string( aLabel ) + ( aValue ? "   on" : "   off" ) + "###" + aLabel;
-    ImGui::PushStyleColor( ImGuiCol_Button, aValue ? im( active ) : im( raised ));
-    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, aValue ? im( active.getLerped( text, 0.15f )) : im( raisedHi ));
-    ImGui::PushStyleColor( ImGuiCol_ButtonActive, aValue ? im( active.getLerped( bg, 0.2f )) : im( border ));
-    ImGui::PushStyleColor( ImGuiCol_Text, aValue ? im( bg ) : im( textMuted ));
+    ImGui::PushStyleColor( ImGuiCol_Button, aValue ? im( aOnFill ) : im( raised ));
+    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, aValue ? im( aOnFill.getLerped( text, 0.12f )) : im( raisedHi ));
+    ImGui::PushStyleColor( ImGuiCol_ButtonActive, aValue ? im( aOnFill.getLerped( bg, 0.2f )) : im( border ));
+    ImGui::PushStyleColor( ImGuiCol_Text, aValue ? im( textOn( aOnFill )) : im( textMuted ));
     const bool tpressed = ImGui::Button( tlabel.c_str(), ImVec2( aWidth, 0 ));
     ImGui::PopStyleColor( 4 );
     if( tpressed ) aValue = !aValue;
