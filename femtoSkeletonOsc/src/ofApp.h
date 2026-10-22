@@ -33,6 +33,7 @@
 
 #include "ofMain.h"
 #include "ofxImGui.h"
+#include "ofxOsc.h"
 #include "ofxOrbbecDevice.h"
 #include "ofxOrbbecRecording.h"
 #include "ofxOrbbecFinder.h"
@@ -140,6 +141,14 @@ private:
     vector< string > mTakes;                // the .femto recordings in bin/data/femto_takes, newest first
     float mTakesListedAt = -100.f;
     float mSettingsSavedAt = -100.f;   // for the "saved" note
+
+    // Once a second, how the app is, for an app control on this computer that keeps it running:
+    // /status "femtoSkeletonOsc" <fps> <problems, ';' between> <info>, to 127.0.0.1:9100. A control that stops
+    // hearing it takes it as stuck.
+    static const int kStatusPort = 9100;
+    void sendStatus();
+    ofxOscSender mStatusOut;
+    float mStatusAt = -100.f;
     void stopCamera( Camera& aCam );
     void cameraLoop( Camera& aCam );
     void outputLoop();

@@ -325,6 +325,7 @@ void ofApp::connectCamera( Camera& aCam ) {
 
 //--------------------------------------------------------------
 void ofApp::update() {
+    if( ofGetElapsedTimef() - mStatusAt >= 1.f ) sendStatus();
     if( mAutoQuitSec > 0 && ofGetElapsedTimef() > mAutoQuitSec ) {
         size_t tin = 0, tsent = 0;
         for( auto& c : mCams ) tin += c->framesIn;
@@ -1328,6 +1329,37 @@ void ofApp::mouseDragged( int x, int y, int button ) {
 void ofApp::mouseScrolled( int x, int y, float, float scrollY ) {
     if( ImGui::GetIO().WantCaptureMouse || !mViewRect.inside( (float)x, (float)y )) return;
     mViewDist = glm::clamp( mViewDist * std::pow( 0.9f, scrollY ), 0.5f, 40.f );
+}
+
+//--------------------------------------------------------------
+// What could stop skeletons going out, in plain words: a camera not answering or not calibrated, no camera at all,
+// sending off.
+void ofApp::sendStatus() {
+    mStatusAt = ofGetElapsedTimef();
+    if( !mStatusOut.isReady() ) mStatusOut.setup( "127.0.0.1", kStatusPort );
+    std::vector< string > tproblems;
+    int topen = 0;
+    for( auto& c : mCams ) {
+        Camera& cam = *c;
+        const bool tlive = cam.device.isOpen() || cam.player || cam.fake;
+        if( tlive ) topen++;
+        if( cam.enabled && !tlive && !cam.userStopped ) tproblems.push_back( "camera " + ofToString( cam.index ) + " at " + cam.ip.get() + " not answering" );
+        if( tlive && cam.index > 0 ) {
+            std::lock_guard< std::mutex > tlk( cam.mtx );
+            if( !cam.calibrated ) tproblems.push_back( "camera " + ofToString( cam.index ) + " not calibrated: its people are not sent" );
+        }
+    }
+    if( topen == 0 ) tproblems.push_back( "no camera open" );
+    if( !bSend ) tproblems.push_back( "sending skeletons is off" );
+
+    ofxOscMessage tmsg;
+    tmsg.setAddress( "/status" );
+    tmsg.addStringArg( "femtoSkeletonOsc" );
+    tmsg.addFloatArg( ofGetFrameRate() );
+    tmsg.addStringArg( ofJoinString( tproblems, ";" ));
+    tmsg.addStringArg( ofToString( topen ) + " camera" + ( topen == 1 ? "" : "s" ) + ", " + ofToString( mBodiesSent.load() ) + " bodies sent to "
+                       + oscHost.get() + ":" + ofToString( oscPort.get() ));
+    mStatusOut.sendMessage( tmsg, false );
 }
 
 //--------------------------------------------------------------
