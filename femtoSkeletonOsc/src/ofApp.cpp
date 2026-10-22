@@ -418,7 +418,7 @@ void ofApp::adoptFound() {
             for( auto& c : mCams ) {
                 if( !c->enabled && !c->userStopped && !c->device.isOpen() && !c->player ) { tplace = c.get(); break; }
             }
-            if( !tplace ) continue;   // all four in use
+            if( !tplace ) continue;   // every slot in use
             tplace->ip = f.ip;
         }
         if( !tplace->enabled && !tplace->userStopped ) {
@@ -829,18 +829,20 @@ void ofApp::draw() {
     // space in 3D below, in perspective (orbits with the mouse) and from above
     ofRectangle tfull( 450, 10, ofGetWidth() - 460, ofGetHeight() - 20 );
     const bool tcams = !tshown.empty();
-    // the 3D views on top, the camera pictures in a row below them
-    const float tcamH = tcams ? tfull.height * 0.3f : 0.f;
+    // the 3D views on top, the camera pictures below them: up to four in a row, then more rows
+    const int tcols = std::max( 1, std::min( 4, (int)tshown.size() ));
+    const int trows = ( (int)tshown.size() + tcols - 1 ) / tcols;
+    const float tcamH = tcams ? tfull.height * ( trows > 1 ? 0.45f : 0.3f ) : 0.f;
     ofRectangle tarea( tfull.x, tfull.getBottom() - tcamH, tfull.width, tcamH );
     const float tviewsH = tfull.height - tcamH - ( tcams ? 6.f : 0.f );
     const float thalf = ( tfull.width - 6.f ) * 0.5f;
     mViewRect = ofRectangle( tfull.x, tfull.y, thalf, tviewsH );
     const ofRectangle ttop( mViewRect.getRight() + 6.f, tfull.y, thalf, tviewsH );
-    const int tcols = std::max( 1, (int)tshown.size() );
     const float tw = tarea.width / tcols;
+    const float th = trows > 0 ? tarea.height / trows : tarea.height;
     for( size_t i = 0; i < tshown.size(); i++ ) {
         Camera& cam = *tshown[i];
-        ofRectangle ttile( tarea.x + i * tw, tarea.y, tw - 6, tarea.height );
+        ofRectangle ttile( tarea.x + ( i % tcols ) * tw, tarea.y + ( i / tcols ) * th, tw - 6, th - ( trows > 1 ? 6 : 0 ));
         ofRectangle timg( 0, 0, cam.tex.getWidth(), cam.tex.getHeight() );
         timg.scaleTo( ttile, OF_SCALEMODE_FIT );
         timg.setPosition( ttile.x + ( ttile.width - timg.width ) * 0.5f, ttile.y );

@@ -2,9 +2,8 @@
 #include "ofMain.h"
 #include "imgui.h"
 
-// The look shared by the Echo & Narcissus tools (femtoSkeletonOsc, oscRecPlay, echoNarcissus): one dark, dense,
-// quiet operator console, where a colour always means the same thing. See SkeletonTracking/DESIGN.md.
-// The same file is in SkeletonTracking/femtoSkeletonOsc/src, SkeletonTracking/oscRecPlay/src and echoNarcissus/src.
+// The look of femtoSkeletonOsc and oscRecPlay: one dark, dense, quiet operator console, where a colour always means
+// the same thing. The same file is in femtoSkeletonOsc/src and oscRecPlay/src.
 namespace optheme {
 
 inline ofColor hex( uint32_t aRgb, int aAlpha = 255 ) { return ofColor(( aRgb >> 16 ) & 255, ( aRgb >> 8 ) & 255, aRgb & 255, aAlpha ); }
@@ -36,13 +35,12 @@ inline const ofColor fakePerson = hex( 0xA78BFA );   // the stand-in person (tes
 inline const ofColor boxPerson  = warning;           // someone found without a skeleton: partial
 inline const ofColor sideLeft   = hex( 0x60A5FA );   // a body's left side
 inline const ofColor sideRight  = hex( 0xF87171 );   // its right side
-inline const ofColor narcissus  = hex( 0x38BDF8 );   // Narcissus and his gaze (the water)
-inline const ofColor echo       = hex( 0xF472B6 );   // Echo, her gaze, and the person she is with
 inline const ofColor axisX = hex( 0xEF4444 ), axisY = hex( 0x22C55E ), axisZ = hex( 0x3B82F6 );
-// cameras 0..3: the reference first
+// cameras: the reference first; eight colours, then they come round again
 inline const ofColor& camera( int i ) {
-    static const ofColor c[4] = { hex( 0x22D3EE ), hex( 0xA78BFA ), hex( 0xFACC15 ), hex( 0xFB923C ) };
-    return c[std::clamp( i, 0, 3 )];
+    static const ofColor c[8] = { hex( 0x22D3EE ), hex( 0xA78BFA ), hex( 0xFACC15 ), hex( 0xFB923C ),
+                                  hex( 0xE879F9 ), hex( 0x2DD4BF ), hex( 0xA3E635 ), hex( 0xFDA4AF ) };
+    return c[std::max( i, 0 ) % 8];
 }
 // a joint's colour: its side's tint over the base, the spine and head left as they are (side: -1 left, 0, 1 right)
 inline ofColor sided( const ofColor& aBase, int aSide ) {

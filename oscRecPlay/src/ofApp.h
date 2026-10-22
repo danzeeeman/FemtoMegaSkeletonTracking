@@ -5,12 +5,12 @@
 // OSC Record Play
 //
 // Records the OSC that femtoSkeletonOsc sends (/bodies/<id>/joints/<Joint> ...) and plays it back
-// later, so echoNarcissus can be developed and shown without the cameras.
+// later, so whatever listens can be developed and shown without the cameras.
 //
 // Record: listens on a port and writes every packet, with its arrival time, to a file of its own,
 // bin/data/takes/take_<date>_<time>.oscrec, so every take is kept. To record while
-// echoNarcissus is running, point the tracker at this app's port and give a "forward to" address (the
-// app's port 9999): everything is passed on as it arrives.
+// the listener is running, point the tracker at this app's port and give a "forward to" address (the
+// listener's, such as 127.0.0.1:9999): everything is passed on as it arrives.
 //
 // Play: sends the recording to a host and port with its original timing, at a chosen speed, once or
 // in a loop.

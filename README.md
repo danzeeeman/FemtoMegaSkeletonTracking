@@ -2,14 +2,12 @@
 
 Two openFrameworks apps for tracking people with Orbbec Femto Mega depth cameras:
 
-- **femtoSkeletonOsc** finds people with one to four Femto Megas on the network and sends their skeletons out over OSC.
+- **femtoSkeletonOsc** finds people with one or more Femto Megas on the network (up to 16) and sends their skeletons out over OSC.
 - **oscRecPlay** records that OSC and plays it back with its timing, so whatever listens can be worked on without the cameras.
 
 ```
-Femto Mega cameras --> femtoSkeletonOsc --OSC--> (oscRecPlay) --> echoNarcissus, or anything that reads it
+Femto Mega cameras --> femtoSkeletonOsc --OSC--> (oscRecPlay) --> anything that reads OSC
 ```
-
-Split out of [EchoAndNarcissus](https://github.com/danzeeeman/EchoAndNarcissus), whose `echoNarcissus` app listens to it. The apps' look (colours, toggles, buttons) is described in [DESIGN.md](DESIGN.md).
 
 ![femtoSkeletonOsc in demo mode: the Settings and Cameras windows on the left, the tracked person in 3D and from above on the right](docs/femtoSkeletonOsc-demo.png)
 
@@ -21,7 +19,7 @@ Split out of [EchoAndNarcissus](https://github.com/danzeeeman/EchoAndNarcissus),
   - [One camera](#one-camera)
   - [Several cameras](#several-cameras): [network](#1-network), [placing](#2-placing-them), [turning on](#3-turning-them-on), [calibrating](#4-calibrating-a-camera), [checking](#5-checking-it), [merging](#merging)
   - [Recording the cameras](#recording-the-cameras)
-  - [What it sends](#what-it-sends)
+  - [What it sends](#what-it-sends): [when](#when), [ids](#ids), [axes](#axes), [the 25 joints](#the-25-joints), [boxes](#boxes)
   - [Settings](#settings)
   - [How a skeleton is made](#how-a-skeleton-is-made)
   - [Files and logs](#files-and-logs)
@@ -52,7 +50,7 @@ Clone this repository into `<openFrameworks>/apps/`, so each app sits three fold
 | **Cameras** (bottom left) | what the search has found on the network; a section for each open camera; a line for each camera that is connecting or stopped; **add a camera** by its address |
 | **perspective** (top middle) | the joined space in 3D, in camera 0's frame. Drag to orbit, wheel to zoom |
 | **from above** (top right) | the same from above, 1 m grid. It zooms out by itself to keep every calibrated camera in view |
-| **camera pictures** (along the bottom) | each camera's colour picture with the poses found in it |
+| **camera pictures** (along the bottom) | each camera's colour picture with the poses found in it, up to four in a row |
 
 In the 3D views, each camera is a frustum in its own colour, with the skeletons it found drawn thin in that colour. The merged people are bold and labelled `person N (k cameras)`. A person found without a skeleton is an amber box, labelled "box" in the camera picture.
 
@@ -72,7 +70,7 @@ On / off settings are toggle buttons: blue and ending in "on" when on, plain and
 
 ### Several cameras
 
-Up to four Femto Megas can watch the same space.
+Up to 16 Femto Megas can watch the same space (`kMaxCameras` in `ofApp.h`). Each camera runs a pose model on a thread of its own, so the computer, more than the app, sets how many keep up at 30 fps.
 - **Camera 0** is the **reference**: the skeletons go out in its frame.
 - **Every other camera** is placed relative to camera 0 by a **calibration** you do by walking about, with no target or markers.
 - **A person seen by several cameras** becomes one merged skeleton with one id.
@@ -92,17 +90,17 @@ Up to four Femto Megas can watch the same space.
 
 #### 3. Turning them on
 
-- **Found automatically.** The app looks for cameras on the network every few seconds and opens each one it finds, up to four.
+- **Found automatically.** The app looks for cameras on the network every few seconds and opens each one it finds, up to 16.
   - A camera keeps its number by its address: one that was camera 2 last time is camera 2 again.
   - A new address takes the first free number.
 - **Not found?** The search only reaches the computer's own subnet. For a camera elsewhere, type its address in **add a camera** and press **Add**.
-- **What you see.** It connects within a few seconds and gets a section in the Cameras window, with its serial, frame count and accelerometer reading. Its picture joins the row along the bottom.
+- **What you see.** It connects within a few seconds and gets a section in the Cameras window, with its serial, frame count and accelerometer reading. Its picture joins the others along the bottom, up to four in a row. Cameras have eight colours, which repeat after camera 7.
 - **Stopping one.** **Stop this camera** lets it go. It stays stopped (the search does not reopen it) until you press its **Start**.
 - **Not calibrated yet.** A camera that is not calibrated is drawn and tracked, but its people are **not sent** ("not calibrated: its people are not sent").
 
 #### 4. Calibrating a camera
 
-Do this for each of cameras 1-3, against camera 0.
+Do this for each camera other than camera 0, against camera 0.
 
 1. In the camera's section, turn **Collect points** on.
 2. Have **one person, alone**, walk about where this camera and camera 0 both see them, for 20-30 seconds.
@@ -163,21 +161,79 @@ The recorder and player are in ofxOrbbec (`ofxOrbbecRecording.h`), with the file
 
 ### What it sends
 
+Skeletons go out as plain OSC messages over UDP, to the OSC host and port in Output (press **Apply OSC address** after changing them). Messages are not bundled.
+
 ```
-/bodies/<id>/joints/<Joint>   x y z "Tracked" | "NotTracked"
-/boxes/<id>                   cx cy cz sx sy sz
+/bodies/<id>/joints/<Joint>   float x, float y, float z, string "Tracked" | "NotTracked"
+/boxes/<id>                   float cx, float cy, float cz, float sx, float sy, float sz
 ```
 
-- **Joints:** 25 per body, with the Kinect v2 names: SpineBase, SpineMid, SpineShoulder, Neck, Head; Shoulder, Elbow, Wrist, Hand, HandTip and Thumb, Left and Right; Hip, Knee, Ankle and Foot, Left and Right.
-  - Every joint is sent for every body, `NotTracked` when it was not placed.
-- **Axes:** metres in camera 0's levelled frame, the way TrackerFemto and Mimic expect them.
-  - y is up.
-  - z is negative away from the sensor.
-  - x is toward the sensor's left (with **Flip X** on).
-- **Ids:** a body's id is the merged person's, and stays with them while they are followed.
-- **Boxes:** `/boxes/<id>` is a person whose skeleton could not be built (arms crossed, turned away, half out of view).
-  - It gives their centre and size in metres, on the same axes.
-  - A box's id is `camera × 1000000 + the tracker's id`, so it never collides with a body's.
+For example, one joint of person 7:
+
+```
+/bodies/7/joints/HandRight   0.412 0.236 -2.180 "Tracked"
+```
+
+#### When
+
+- **Updates.** Each time a person is updated (whenever any camera has a new frame of them, about 30 times a second), all 25 of their joints are sent, one message each.
+- **Missing joints.** A joint that was not placed this time is sent as `NotTracked`. Ignore its x y z.
+- **Leaving.** Nothing is sent when someone leaves: a body whose messages stop has gone. **Forget a person after** (1 s) is how long the tracker keeps them, so a listener should forget a body after about that long without messages.
+
+#### Ids
+
+- **Bodies.** A body's `<id>` is the merged person's. It stays the same while they are followed, across cameras. Ids count up from 1 and are not reused while the app runs (they start again at 1 after a restart).
+- **Boxes.** A box's `<id>` is `camera × 1000000 + the pose tracker's id`, so it never collides with a body's.
+
+#### Axes
+
+Metres, in **camera 0's levelled frame**: the origin is camera 0, turned so y is straight up whatever the camera's tilt. This is the Kinect v2's convention, which TrackerFemto and Mimic expect.
+
+| axis | direction |
+|---|---|
+| x | toward the sensor's left (with **Flip X** on; off, toward its right) |
+| y | up |
+| z | negative away from the sensor: someone 2 m in front of it has z = -2 |
+
+Every camera's people are put into this frame by its calibration, so the frame does not change as cameras are added.
+
+#### The 25 joints
+
+Named and numbered as the Kinect v2 (and Mimic's `Skeleton::JointIndex`) number them. The parent is the joint each one hangs from: the bones are drawn parent to joint.
+
+| # | joint | parent | where it comes from |
+|---|---|---|---|
+| 0 | SpineBase | | halfway between the hips |
+| 1 | SpineMid | SpineBase | halfway between SpineBase and SpineShoulder |
+| 2 | SpineShoulder | SpineMid | halfway between the shoulders |
+| 3 | Neck | SpineShoulder | 30% of the way from SpineShoulder to Head |
+| 4 | Head | Neck | between the ears, or the nose when the ears are not seen |
+| 5 | ShoulderLeft | SpineShoulder | keypoint |
+| 6 | ElbowLeft | ShoulderLeft | keypoint |
+| 7 | WristLeft | ElbowLeft | keypoint |
+| 8 | HandLeft | WristLeft | RTMW: the middle finger's knuckle. YOLO: at the wrist |
+| 9 | HandTipLeft | HandLeft | RTMW: the middle finger's tip. YOLO: `NotTracked` |
+| 10 | ThumbLeft | WristLeft | RTMW: the thumb's tip. YOLO: `NotTracked` |
+| 11 | ShoulderRight | SpineShoulder | keypoint |
+| 12 | ElbowRight | ShoulderRight | keypoint |
+| 13 | WristRight | ElbowRight | keypoint |
+| 14 | HandRight | WristRight | as HandLeft |
+| 15 | HandTipRight | HandRight | as HandTipLeft |
+| 16 | ThumbRight | WristRight | as ThumbLeft |
+| 17 | HipLeft | SpineBase | keypoint |
+| 18 | KneeLeft | HipLeft | keypoint |
+| 19 | AnkleLeft | KneeLeft | keypoint |
+| 20 | FootLeft | AnkleLeft | RTMW: the big toe. YOLO: at the ankle |
+| 21 | HipRight | SpineBase | keypoint |
+| 22 | KneeRight | HipRight | keypoint |
+| 23 | AnkleRight | KneeRight | keypoint |
+| 24 | FootRight | AnkleRight | as FootLeft |
+
+"Left" and "right" are the person's own. The joints made from others (the spine, neck and head) are only placed when the joints they come from are.
+
+#### Boxes
+
+`/boxes/<id>` is a person the detector found whose skeleton could not be built: arms crossed, turned away, or half out of view (fewer than **Joints to send a body** placed). It gives the centre (`cx cy cz`) and size (`sx sy sz`) of a box round them, in metres on the same axes. A box is about 0.3 m deep, a body's thickness behind the front of the person.
 
 ### Settings
 
@@ -202,7 +258,7 @@ Saved to `bin/data/settings.xml` on **Save settings** (it shows "saved") and on 
 | Level from accelerometer | on | pitch and roll from the accelerometer, not the sliders |
 | Camera Upside Down | off | turn on only if the 3D view comes out upside down |
 | Record / play back | | [recording the cameras](#recording-the-cameras) |
-| Collect points, Solve, Clear points, Forget calibration | | cameras 1-3: [calibrating](#4-calibrating-a-camera) |
+| Collect points, Solve, Clear points, Forget calibration | | every camera but camera 0: [calibrating](#4-calibrating-a-camera) |
 
 **skeleton**
 
@@ -289,13 +345,13 @@ FEMTO_PLAY=femto_takes/cam0_20261022_062955.femto TRACKER_QUIT_AFTER=30 make Run
 
 ## oscRecPlay
 
-Records the OSC that femtoSkeletonOsc sends and plays it back later with its timing, so whatever listens (echoNarcissus) can be worked on and shown without the cameras.
+Records the OSC that femtoSkeletonOsc sends and plays it back later with its timing, so whatever listens can be worked on and shown without the cameras.
 
 ![oscRecPlay playing a take: the recordings, Record and Play on the left, the skeletons as the sensor sees them and from above on the right](docs/oscRecPlay.png)
 
 - **Record:**
   - It listens on a port (9998), and each take goes to a file of its own, `bin/data/takes/take_<date>_<time>.oscrec`.
-  - To record while echoNarcissus runs, point femtoSkeletonOsc at 9998 and turn **forward to** on, set to `127.0.0.1:9999`: every packet is passed on as it arrives.
+  - To record while your listener runs, point femtoSkeletonOsc at 9998 and turn **forward to** on, set to the listener's address (such as `127.0.0.1:9999`): every packet is passed on as it arrives.
   - Packets are kept byte for byte, so messages and bundles play back exactly as sent.
 - **Recordings:**
   - Every take is listed, newest first (older ones in `bin/data` too).

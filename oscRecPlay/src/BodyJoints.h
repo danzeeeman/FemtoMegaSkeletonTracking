@@ -5,7 +5,6 @@
 
 // The 25 joints femtoSkeletonOsc sends as /bodies/<id>/joints/<Joint> (Kinect v2 names, in the order of
 // FemtoSkeleton::Joint), and the bones between them, for drawing a whole person.
-// echoNarcissus/src/BodyJoints.h is the same file.
 namespace bodyjoints {
 
 enum Joint {

@@ -5,7 +5,7 @@
 // Femto Skeleton OSC
 //
 // Finds the people in front of one or more Orbbec Femto Megas that are on the network (Ethernet, PoE) and
-// sends their skeletons out over OSC, in the form TrackerFemto sent them and Echo & Narcissus listens for:
+// sends their skeletons out over OSC, in the form TrackerFemto sent them:
 //
 //     /bodies/<id>/joints/<Joint>   x y z "Tracked" | "NotTracked"
 //
@@ -51,7 +51,9 @@
 
 class ofApp : public ofBaseApp {
 public:
-    static const int kMaxCameras = 4;
+    // as many cameras as there can be: a slot costs nothing until its camera connects (then it gets a pose model and
+    // a thread of its own)
+    static const int kMaxCameras = 16;
 
     void setup() override;
     void update() override;
