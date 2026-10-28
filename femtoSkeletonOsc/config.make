@@ -160,4 +160,8 @@ PROJECT_AFTER += cp -a $(OF_ROOT)/addons/ofxOrbbec/libs/OrbbecSDK/lib/macos/*.dy
 # Last: sign the whole bundle (ad hoc), so its Info.plist, with the local network permission it asks for, is sealed into
 # the signature and the app is known by its bundle id. A make build only signs the executable, and an app opened from
 # Finder is then not given the local network.
+# ofxSyphon's own client class is in libs/Syphon/src, which the makefile builds but does not put on the include path
+PROJECT_CFLAGS += -I$(OF_ROOT)/addons/ofxSyphon/libs/Syphon/src
+# Syphon's framework, where the app looks for it (@loader_path/../Frameworks)
+PROJECT_AFTER += mkdir -p bin/$(BIN_NAME).app/Contents/Frameworks && cp -a $(OF_ROOT)/addons/ofxSyphon/libs/Syphon/lib/osx/Syphon.framework bin/$(BIN_NAME).app/Contents/Frameworks/ ;
 PROJECT_AFTER += codesign --force --deep --sign - --entitlements of.entitlements bin/$(BIN_NAME).app ;

@@ -922,6 +922,46 @@ void ofApp::collectCalibration( Camera& aCam, const vector< FemtoSkeleton::Body 
 }
 
 //--------------------------------------------------------------
+// A camera's colour picture in aRect, with the poses its thread found drawn over it and its name: on screen, and into
+// its Syphon feed.
+void ofApp::drawCameraPicture( Camera& cam, const ofRectangle& timg ) {
+    ofSetColor( 255 );
+    cam.tex.draw( timg );
+    // the poses the camera's thread found in it (not tracker->draw(): that thread is changing the tracker)
+    vector< Camera::Pose2D > tposes;
+    {
+        std::lock_guard< std::mutex > tlk( cam.mtx );
+        tposes = cam.poses2d;
+    }
+    const float ts = timg.width / std::max( 1.f, cam.tex.getWidth() );
+    auto tat = [&]( const glm::vec2& k ) { return glm::vec2( timg.x + k.x * ts, timg.y + k.y * ts ); };
+    // COCO body: face, arms, shoulders and hips, legs
+    static const int tcoco[][2] = { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 4 }, { 5, 7 }, { 7, 9 }, { 6, 8 }, { 8, 10 }, { 5, 6 }, { 5, 11 },
+                                    { 6, 12 }, { 11, 12 }, { 11, 13 }, { 13, 15 }, { 12, 14 }, { 14, 16 } };
+    for( auto& tp : tposes ) {
+        const ofColor tc = ofColor::fromHsb( ( tp.id * 53 ) % 255, 160, 255 );
+        if( !tp.skeleton ) {
+            // found, but no skeleton: sent as a box
+            ofNoFill();
+            ofSetLineWidth( 2.f );
+            ofSetColor( optheme::boxPerson );
+            ofDrawRectangle( tat( glm::vec2( tp.box.x, tp.box.y )), tp.box.width * ts, tp.box.height * ts );
+            ofSetLineWidth( 1.f );
+            ofFill();
+            ofDrawBitmapString( "box", tat( glm::vec2( tp.box.x, tp.box.y )) + glm::vec2( 4, 14 ));
+        }
+        auto good = [&]( int k ) { return k < (int)tp.keypoints.size() && k < (int)tp.scores.size() && tp.scores[k] >= mSkeleton.minScore; };
+        ofSetLineWidth( 2.f );
+        ofSetColor( tc );
+        for( auto& tb : tcoco ) if( good( tb[0] ) && good( tb[1] )) ofDrawLine( tat( tp.keypoints[tb[0]] ), tat( tp.keypoints[tb[1]] ));
+        ofSetLineWidth( 1.f );
+        for( int k = 0; k < (int)tp.keypoints.size(); k++ ) if( good( k )) ofDrawCircle( tat( tp.keypoints[k] ), k < 17 ? 3.f : 1.5f );
+    }
+    ofSetColor( optheme::camera( cam.index ) );
+    ofDrawBitmapString( "camera " + ofToString( cam.index ) + ( cam.index > 0 && !cam.calibrated ? "  (not calibrated)" : "" ), timg.x + 6, timg.y + 14 );
+}
+
+//--------------------------------------------------------------
 void ofApp::draw() {
     std::vector< Camera* > tshown;
     for( auto& c : mCams ) if( c->enabled && c->tex.isAllocated() ) tshown.push_back( c.get() );
@@ -949,40 +989,20 @@ void ofApp::draw() {
         ofRectangle timg( 0, 0, cam.tex.getWidth(), cam.tex.getHeight() );
         timg.scaleTo( ttile, OF_SCALEMODE_FIT );
         timg.setPosition( ttile.x + ( ttile.width - timg.width ) * 0.5f, ttile.y );
-        ofSetColor( 255 );
-        cam.tex.draw( timg );
-        // the poses the camera's thread found in it (not tracker->draw(): that thread is changing the tracker)
-        vector< Camera::Pose2D > tposes;
-        {
-            std::lock_guard< std::mutex > tlk( cam.mtx );
-            tposes = cam.poses2d;
+        drawCameraPicture( cam, timg );
+        // and its Syphon feed, at the picture's own size
+        const int tw0 = (int)cam.tex.getWidth(), th0 = (int)cam.tex.getHeight();
+        if( (int)cam.syphonFbo.getWidth() != tw0 || (int)cam.syphonFbo.getHeight() != th0 ) {
+            cam.syphonFbo.allocate( tw0, th0, GL_RGBA );
+            cam.syphon.setName( "camera " + ofToString( cam.index ));
         }
-        const float ts = timg.width / std::max( 1.f, cam.tex.getWidth() );
-        auto tat = [&]( const glm::vec2& k ) { return glm::vec2( timg.x + k.x * ts, timg.y + k.y * ts ); };
-        // COCO body: face, arms, shoulders and hips, legs
-        static const int tcoco[][2] = { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 4 }, { 5, 7 }, { 7, 9 }, { 6, 8 }, { 8, 10 }, { 5, 6 }, { 5, 11 },
-                                        { 6, 12 }, { 11, 12 }, { 11, 13 }, { 13, 15 }, { 12, 14 }, { 14, 16 } };
-        for( auto& tp : tposes ) {
-            const ofColor tc = ofColor::fromHsb( ( tp.id * 53 ) % 255, 160, 255 );
-            if( !tp.skeleton ) {
-                // found, but no skeleton: sent as a box
-                ofNoFill();
-                ofSetLineWidth( 2.f );
-                ofSetColor( optheme::boxPerson );
-                ofDrawRectangle( tat( glm::vec2( tp.box.x, tp.box.y )), tp.box.width * ts, tp.box.height * ts );
-                ofSetLineWidth( 1.f );
-                ofFill();
-                ofDrawBitmapString( "box", tat( glm::vec2( tp.box.x, tp.box.y )) + glm::vec2( 4, 14 ));
-            }
-            auto good = [&]( int k ) { return k < (int)tp.keypoints.size() && k < (int)tp.scores.size() && tp.scores[k] >= mSkeleton.minScore; };
-            ofSetLineWidth( 2.f );
-            ofSetColor( tc );
-            for( auto& tb : tcoco ) if( good( tb[0] ) && good( tb[1] )) ofDrawLine( tat( tp.keypoints[tb[0]] ), tat( tp.keypoints[tb[1]] ));
-            ofSetLineWidth( 1.f );
-            for( int k = 0; k < (int)tp.keypoints.size(); k++ ) if( good( k )) ofDrawCircle( tat( tp.keypoints[k] ), k < 17 ? 3.f : 1.5f );
-        }
-        ofSetColor( optheme::camera( cam.index ) );
-        ofDrawBitmapString( "camera " + ofToString( cam.index ) + ( cam.index > 0 && !cam.calibrated ? "  (not calibrated)" : "" ), timg.x + 6, timg.y + 14 );
+        cam.syphonFbo.begin();
+        ofClear( 0, 0, 0, 255 );
+        drawCameraPicture( cam, ofRectangle( 0, 0, tw0, th0 ));
+        cam.syphonFbo.end();
+        // drawn into by OF: not marked flipped (the right way up in OBS, like echoNarcissus's scene)
+        const ofTextureData& tsd = cam.syphonFbo.getTexture().getTextureData();
+        cam.syphon.publishTexture( tsd.textureID, tsd.textureTarget, tsd.width, tsd.height, false );
     }
 
     draw3d( mViewRect, false );

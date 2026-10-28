@@ -34,6 +34,7 @@
 #include "ofMain.h"
 #include "ofxImGui.h"
 #include "ofxOsc.h"
+#include "ofxSyphon.h"
 #include "ofxOrbbecDevice.h"
 #include "ofxOrbbecRecording.h"
 #include "ofxOrbbecFinder.h"
@@ -87,6 +88,9 @@ private:
         std::shared_ptr< ofxYoloPose > yolo;            // the same, for YOLO11-pose
         std::future< bool > connecting;
         float lastTry = -100.f;
+        // its Syphon feed ("camera <n>"): the picture with its poses, at the picture's size
+        ofFbo syphonFbo;
+        ofxSyphonServer syphon;
         float failingSince = -1.f;              // when its tries started failing (-1: not failing)
         bool failReported = false;              // the error for it is logged (once, until it answers)
         float lastTrackerTry = -100.f;          // the models failed to load: not again until a while later
@@ -180,6 +184,7 @@ private:
     void collectCalibration( Camera& aCam, const vector< FemtoSkeleton::Body >& aRefBodies, double aRefTime );
     void drawCameraPanel( Camera& aCam );
     void beginPanel( const char* aName, const ofRectangle& aArea );
+    void drawCameraPicture( Camera& aCam, const ofRectangle& aRect );
     void drawSettingsWindow( const ofRectangle& aArea );
     void drawCamerasWindow( const ofRectangle& aArea );
     void startCameraByUser( Camera& aCam );

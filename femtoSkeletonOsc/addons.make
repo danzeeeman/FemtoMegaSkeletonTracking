@@ -5,3 +5,4 @@ ofxOrbbec
 ofxOsc
 ofxRtmPoseTracker
 ofxYoloPose
+ofxSyphon

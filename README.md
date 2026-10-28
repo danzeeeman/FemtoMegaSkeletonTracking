@@ -58,6 +58,8 @@ On / off settings are toggle buttons: blue and ending in "on" when on, plain and
 | `r` | record every camera / stop |
 | `h` | the Settings and Cameras windows hidden / shown (the views take the whole window) |
 
+Each camera is also a Syphon feed, **camera N** (its colour picture with the poses drawn on, at full size), for OBS: **+ > Syphon Client**.
+
 ### One camera
 
 1. Connect the Femto Mega to the computer's network (directly or through a PoE switch). Its factory address is `192.168.1.10`; give the computer an address in the same subnet, such as `192.168.1.2`.
