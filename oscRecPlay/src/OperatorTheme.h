@@ -9,24 +9,24 @@ namespace optheme {
 inline ofColor hex( uint32_t aRgb, int aAlpha = 255 ) { return ofColor(( aRgb >> 16 ) & 255, ( aRgb >> 8 ) & 255, aRgb & 255, aAlpha ); }
 inline ImVec4 im( const ofColor& c, float aAlpha = -1.f ) { return ImVec4( c.r / 255.f, c.g / 255.f, c.b / 255.f, aAlpha >= 0.f ? aAlpha : c.a / 255.f ); }
 
-// --- surfaces (slate) ---
-inline const ofColor bg         = hex( 0x0F172A );   // the window behind everything, 3D view backgrounds
-inline const ofColor panel      = hex( 0x1B2336 );   // control windows
-inline const ofColor raised     = hex( 0x272F42 );   // fields, headers
-inline const ofColor raisedHi   = hex( 0x334155 );   // hovered
-inline const ofColor border     = hex( 0x475569 );
-inline const ofColor text       = hex( 0xF8FAFC );   // 15.9:1 on panel
-inline const ofColor textMuted  = hex( 0x94A3B8 );   // 6.3:1 on panel: labels, hints
-inline const ofColor grid       = hex( 0xFFFFFF, 28 );   // floor grid, metres
-inline const ofColor gridFine   = hex( 0xFFFFFF, 12 );   // half metres
+// --- surfaces: black, neutral greys, no tint; panels see-through over the views, parts drawn as outlines ---
+inline const ofColor bg         = hex( 0x000000 );   // the window behind everything, 3D view backgrounds
+inline const ofColor panel      = hex( 0x0A0A0A );   // control windows (drawn at 55%: the views show through)
+inline const ofColor raised     = hex( 0xFFFFFF, 14 );   // fields, headers: a breath of white, not a solid
+inline const ofColor raisedHi   = hex( 0xFFFFFF, 30 );   // hovered
+inline const ofColor border     = hex( 0x6B6B6B );   // outlines of buttons, fields, panels (3.9:1 on black)
+inline const ofColor text       = hex( 0xF5F5F5 );   // 19:1 on black
+inline const ofColor textMuted  = hex( 0xB0B0B0 );   // 10:1 on black: labels, hints
+inline const ofColor grid       = hex( 0xFFFFFF, 34 );   // floor grid, metres
+inline const ofColor gridFine   = hex( 0xFFFFFF, 14 );   // half metres
 
 // --- status: one meaning each ---
 inline const ofColor ok         = hex( 0x22C55E );   // live, connected, start
-inline const ofColor active     = hex( 0x3B82F6 );   // the interactive accent: selection, sliders, focus
-inline const ofColor activeFill = hex( 0x1D4ED8 );   // the same, under text: a toggle that is on (white text on it, 6.7:1)
+inline const ofColor active     = hex( 0x7DB7FF );   // the interactive accent: a toggle that is on, focus, selection (9:1 on black)
+inline const ofColor activeFill = active;            // (was a solid fill; on now draws as an outline in the accent)
 inline const ofColor warning    = hex( 0xF59E0B );   // connecting, partial (a person seen only as a box), not calibrated
 inline const ofColor danger     = hex( 0xF87171 );   // recording, faults, hold: as text (5.7:1 on panel)
-inline const ofColor dangerFill = hex( 0xA84848 );   // the same, as a button's fill: a soft brick red (white text on it, 5.4:1)
+inline const ofColor dangerFill = danger;            // (was a solid fill; buttons now draw red as an outline and text)
 inline const ofColor info       = hex( 0x38BDF8 );   // playing back a recording
 
 // --- what is drawn ---
@@ -47,49 +47,50 @@ inline ofColor sided( const ofColor& aBase, int aSide ) {
     return aSide < 0 ? aBase.getLerped( sideLeft, 0.5f ) : aSide > 0 ? aBase.getLerped( sideRight, 0.5f ) : aBase;
 }
 
-// The ImGui style: slate surfaces, the blue accent, dense spacing, small rounding, no motion. Call once after the
-// ImGui context exists (after gui.setup()).
+// The ImGui style: black, see-through panels, outlined controls with only a trace of fill, dense spacing, small
+// rounding, no motion. Call once after the ImGui context exists (after gui.setup()).
 inline void applyImGui() {
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowPadding = ImVec2( 10, 10 );
-    s.FramePadding = ImVec2( 6, 4 );
-    s.ItemSpacing = ImVec2( 8, 5 );
+    s.FramePadding = ImVec2( 7, 5 );
+    s.ItemSpacing = ImVec2( 8, 6 );
     s.ItemInnerSpacing = ImVec2( 6, 4 );
     s.IndentSpacing = 14;
     s.ScrollbarSize = 12;
     s.GrabMinSize = 10;
-    s.WindowRounding = 4; s.ChildRounding = 4; s.FrameRounding = 4; s.PopupRounding = 4;
-    s.ScrollbarRounding = 4; s.GrabRounding = 4; s.TabRounding = 4;
-    s.WindowBorderSize = 1; s.FrameBorderSize = 0; s.PopupBorderSize = 1;
+    s.WindowRounding = 3; s.ChildRounding = 3; s.FrameRounding = 3; s.PopupRounding = 3;
+    s.ScrollbarRounding = 3; s.GrabRounding = 2; s.TabRounding = 3;
+    s.WindowBorderSize = 1; s.FrameBorderSize = 1; s.PopupBorderSize = 1;
 
     ImVec4* c = s.Colors;
     c[ImGuiCol_Text]                 = im( text );
     c[ImGuiCol_TextDisabled]         = im( textMuted );
-    c[ImGuiCol_WindowBg]             = im( panel, 0.97f );
-    c[ImGuiCol_ChildBg]              = im( panel, 0.f );
-    c[ImGuiCol_PopupBg]              = im( panel, 0.98f );
-    c[ImGuiCol_Border]               = im( border, 0.6f );
+    c[ImGuiCol_WindowBg]             = im( panel, 0.55f );
+    c[ImGuiCol_ChildBg]              = ImVec4( 0, 0, 0, 0 );
+    c[ImGuiCol_PopupBg]              = im( bg, 0.92f );   // a question stays readable over anything
+    c[ImGuiCol_ModalWindowDimBg]     = im( bg, 0.6f );
+    c[ImGuiCol_Border]               = im( border, 0.7f );
     c[ImGuiCol_BorderShadow]         = ImVec4( 0, 0, 0, 0 );
     c[ImGuiCol_FrameBg]              = im( raised );
     c[ImGuiCol_FrameBgHovered]       = im( raisedHi );
-    c[ImGuiCol_FrameBgActive]        = im( border );
-    c[ImGuiCol_TitleBg]              = im( bg );
-    c[ImGuiCol_TitleBgActive]        = im( raised );
-    c[ImGuiCol_TitleBgCollapsed]     = im( bg );
+    c[ImGuiCol_FrameBgActive]        = im( active, 0.18f );
+    c[ImGuiCol_TitleBg]              = im( bg, 0.7f );
+    c[ImGuiCol_TitleBgActive]        = im( bg, 0.85f );
+    c[ImGuiCol_TitleBgCollapsed]     = im( bg, 0.7f );
     c[ImGuiCol_MenuBarBg]            = im( raised );
-    c[ImGuiCol_ScrollbarBg]          = im( panel, 0.f );
-    c[ImGuiCol_ScrollbarGrab]        = im( border );
+    c[ImGuiCol_ScrollbarBg]          = ImVec4( 0, 0, 0, 0 );
+    c[ImGuiCol_ScrollbarGrab]        = im( border, 0.8f );
     c[ImGuiCol_ScrollbarGrabHovered] = im( textMuted );
     c[ImGuiCol_ScrollbarGrabActive]  = im( text );
     c[ImGuiCol_CheckMark]            = im( active );
-    c[ImGuiCol_SliderGrab]           = im( active );
-    c[ImGuiCol_SliderGrabActive]     = im( active.getLerped( text, 0.3f ));
-    c[ImGuiCol_Button]               = im( raisedHi );
-    c[ImGuiCol_ButtonHovered]        = im( border );
-    c[ImGuiCol_ButtonActive]         = im( active );
-    c[ImGuiCol_Header]               = im( raised );
+    c[ImGuiCol_SliderGrab]           = im( text, 0.55f );   // a soft white handle, not a block of colour
+    c[ImGuiCol_SliderGrabActive]     = im( active );
+    c[ImGuiCol_Button]               = im( raised );
+    c[ImGuiCol_ButtonHovered]        = im( raisedHi );
+    c[ImGuiCol_ButtonActive]         = im( active, 0.25f );
+    c[ImGuiCol_Header]               = ImVec4( 0, 0, 0, 0 );   // section headers: the outline and the arrow only
     c[ImGuiCol_HeaderHovered]        = im( raisedHi );
-    c[ImGuiCol_HeaderActive]         = im( active, 0.6f );
+    c[ImGuiCol_HeaderActive]         = im( active, 0.2f );
     c[ImGuiCol_Separator]            = im( border, 0.6f );
     c[ImGuiCol_SeparatorHovered]     = im( active );
     c[ImGuiCol_SeparatorActive]      = im( active );
@@ -98,12 +99,12 @@ inline void applyImGui() {
     c[ImGuiCol_ResizeGripActive]     = im( active );
     c[ImGuiCol_Tab]                  = im( raised );
     c[ImGuiCol_TabHovered]           = im( raisedHi );
-    c[ImGuiCol_TabActive]            = im( active, 0.6f );
+    c[ImGuiCol_TabActive]            = im( active, 0.2f );
     c[ImGuiCol_TabUnfocused]         = im( raised );
     c[ImGuiCol_TabUnfocusedActive]   = im( raisedHi );
     c[ImGuiCol_PlotLines]            = im( active );
-    c[ImGuiCol_PlotHistogram]        = im( active );
-    c[ImGuiCol_TextSelectedBg]       = im( active, 0.35f );
+    c[ImGuiCol_PlotHistogram]        = im( active, 0.6f );
+    c[ImGuiCol_TextSelectedBg]       = im( active, 0.3f );
     c[ImGuiCol_NavHighlight]         = im( active );
 }
 
@@ -125,15 +126,22 @@ inline float contrast( const ofColor& a, const ofColor& b ) {
 // Whichever of white and the dark background reads better on a fill.
 inline ofColor textOn( const ofColor& aFill ) { return contrast( text, aFill ) >= contrast( bg, aFill ) ? text : bg; }
 
-// A full-width primary button in a status colour (green start, deep red stop / record, ...), its text white or dark,
-// whichever reads better on it. For red use dangerFill, not danger.
-inline bool actionButton( const char* aLabel, const ofColor& aFill ) {
-    ImGui::PushStyleColor( ImGuiCol_Button, im( aFill ));
-    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, im( aFill.getLerped( text, 0.15f )));
-    ImGui::PushStyleColor( ImGuiCol_ButtonActive, im( aFill.getLerped( bg, 0.2f )));
-    ImGui::PushStyleColor( ImGuiCol_Text, im( textOn( aFill )));
+// A button outlined and lettered in a colour (green start, red stop / record, the accent ...), over a trace of the
+// same colour: it reads by its words and its outline, not a block of colour.
+inline void pushOutlined( const ofColor& aColour, bool aStrong = true ) {
+    ImGui::PushStyleColor( ImGuiCol_Button, im( aColour, aStrong ? 0.14f : 0.06f ));
+    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, im( aColour, 0.26f ));
+    ImGui::PushStyleColor( ImGuiCol_ButtonActive, im( aColour, 0.38f ));
+    ImGui::PushStyleColor( ImGuiCol_Border, im( aColour, 0.9f ));
+    ImGui::PushStyleColor( ImGuiCol_Text, im( aColour.getLerped( text, 0.25f )));
+}
+inline void popOutlined() { ImGui::PopStyleColor( 5 ); }
+
+// A full-width primary button in a status colour, as an outline.
+inline bool actionButton( const char* aLabel, const ofColor& aColour ) {
+    pushOutlined( aColour );
     const bool tpressed = ImGui::Button( aLabel, ImVec2( -1, 0 ));
-    ImGui::PopStyleColor( 4 );
+    popOutlined();
     return tpressed;
 }
 
@@ -142,12 +150,17 @@ inline bool actionButton( const char* aLabel, const ofColor& aFill ) {
 // whose on is a hazard (a real arm armed) passes dangerFill for aOnFill.
 inline bool toggle( const char* aLabel, bool& aValue, float aWidth = -1.f, const ofColor& aOnFill = activeFill ) {
     const std::string tlabel = std::string( aLabel ) + ( aValue ? "   on" : "   off" ) + "###" + aLabel;
-    ImGui::PushStyleColor( ImGuiCol_Button, aValue ? im( aOnFill ) : im( raised ));
-    ImGui::PushStyleColor( ImGuiCol_ButtonHovered, aValue ? im( aOnFill.getLerped( text, 0.12f )) : im( raisedHi ));
-    ImGui::PushStyleColor( ImGuiCol_ButtonActive, aValue ? im( aOnFill.getLerped( bg, 0.2f )) : im( border ));
-    ImGui::PushStyleColor( ImGuiCol_Text, aValue ? im( textOn( aOnFill )) : im( textMuted ));
+    // on: outlined and lettered in the accent (or red for a hazard); off: a grey outline, muted letters
+    if( aValue ) pushOutlined( aOnFill );
+    else {
+        ImGui::PushStyleColor( ImGuiCol_Button, ImVec4( 0, 0, 0, 0 ));
+        ImGui::PushStyleColor( ImGuiCol_ButtonHovered, im( raisedHi ));
+        ImGui::PushStyleColor( ImGuiCol_ButtonActive, im( aOnFill, 0.25f ));
+        ImGui::PushStyleColor( ImGuiCol_Border, im( border, 0.7f ));
+        ImGui::PushStyleColor( ImGuiCol_Text, im( textMuted ));
+    }
     const bool tpressed = ImGui::Button( tlabel.c_str(), ImVec2( aWidth, 0 ));
-    ImGui::PopStyleColor( 4 );
+    popOutlined();
     if( tpressed ) aValue = !aValue;
     return tpressed;
 }

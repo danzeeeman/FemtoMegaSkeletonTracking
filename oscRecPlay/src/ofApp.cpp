@@ -402,17 +402,13 @@ static void portInput( const char* aLabel, int& aPort ) {
 }
 
 //--------------------------------------------------------------
-void ofApp::draw() {
-    // the skeletons going by, right of the controls: as the sensor sees them above, from above below
-    const float panelW = 430.f, gap = 10.f;
-    const float vx = panelW + 2.f * gap, vw = ofGetWidth() - vx - gap, vh = ( ofGetHeight() - 3.f * gap ) * 0.5f;
-    drawFront( ofRectangle( vx, gap, vw, vh ));
-    drawTop( ofRectangle( vx, 2.f * gap + vh, vw, vh ));
-
-    gui.begin();
-    ImGui::SetNextWindowPos( ImVec2( gap, gap ), ImGuiCond_Always );
-    ImGui::SetNextWindowSize( ImVec2( panelW, ofGetHeight() - 2.f * gap ), ImGuiCond_Always );
-    ImGui::Begin( "OSC Record Play", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove );
+// The controls, against the left, the window's height, as wide as what is in them (h hides them).
+void ofApp::drawControls() {
+    const float H = ofGetHeight();
+    ImGui::SetNextWindowPos( ImVec2( 0, 0 ), ImGuiCond_Always );
+    ImGui::SetNextWindowSizeConstraints( ImVec2( 0, H ), ImVec2( FLT_MAX, H ));
+    ImGui::Begin( "OSC Record Play", nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize );
+    panelW = ImGui::GetWindowWidth();
 
     // the recordings: click one to play it
     if( ofGetElapsedTimef() - takesListedAt > 2.f ) listTakes();
@@ -484,11 +480,30 @@ void ofApp::draw() {
     ImGui::TextWrapped( "last: %s", last.c_str() );
 
     ImGui::End();
+}
+
+//--------------------------------------------------------------
+void ofApp::keyPressed( int key ) {
+    if( ImGui::GetIO().WantTextInput ) return;
+    if( key == 'h' ) showGui = !showGui;
+}
+
+//--------------------------------------------------------------
+void ofApp::draw() {
+    // the skeletons going by, right of the controls: as the sensor sees them above, from above below
+    const float gap = 10.f;
+    const float vx = ( showGui ? panelW : 0.f ) + gap, vw = ofGetWidth() - vx - gap, vh = ( ofGetHeight() - 3.f * gap ) * 0.5f;
+    drawFront( ofRectangle( vx, gap, vw, vh ));
+    drawTop( ofRectangle( vx, 2.f * gap + vh, vw, vh ));
+
+    gui.begin();
+    if( showGui ) drawControls();
     gui.end();
 
     if( !shotPath.empty() && ofGetElapsedTimef() > 6.f ) {
         ofImage img;
         img.grabScreen( 0, 0, ofGetWidth(), ofGetHeight() );
+        img.setImageType( OF_IMAGE_COLOR );   // as on screen: the panels' see-through alpha left out
         img.save( shotPath );
         ofExit( 0 );
     }

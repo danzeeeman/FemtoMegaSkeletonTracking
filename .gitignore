@@ -11,3 +11,6 @@
 */*.xcodeproj/
 
 .DS_Store
+# a camera's picture for the Controller App's page
+femtoSkeletonOsc/bin/data/camview*.jpg
+femtoSkeletonOsc/bin/data/camview*.jpg.tmp

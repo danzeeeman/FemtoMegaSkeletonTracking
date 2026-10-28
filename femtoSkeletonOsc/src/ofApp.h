@@ -87,6 +87,8 @@ private:
         std::shared_ptr< ofxYoloPose > yolo;            // the same, for YOLO11-pose
         std::future< bool > connecting;
         float lastTry = -100.f;
+        float failingSince = -1.f;              // when its tries started failing (-1: not failing)
+        bool failReported = false;              // the error for it is logged (once, until it answers)
         float lastTrackerTry = -100.f;          // the models failed to load: not again until a while later
         ofxOrbbecIntrinsics K;                  // set before the worker starts
 
@@ -138,6 +140,19 @@ private:
     bool recordingAny() const;
     void toggleRecording();                 // every connected camera starts recording, or all stop
     void listTakes();
+
+    // No camera found for kAutoPlaySec: camera 0 plays the recordings instead, one after another, newest first,
+    // round again at the end, so everything downstream keeps working. A camera found ends it at once.
+    static constexpr float kAutoPlaySec = 20.f;
+    void autoPlay();
+    bool mAutoPlaying = false;
+    // looking for cameras (the network search, and trying each camera's address): off while the recordings play, so
+    // the log is not filled with cameras that are not there; "Look for cameras again" turns it back on
+    static constexpr float kCameraErrorSec = 50.f;   // a camera failing this long is an error (before then, warnings)
+    bool mSearching = true;
+    void lookForCamerasAgain();
+    int mAutoTake = 0;
+    float mNoCameraSince = 0.f;
     vector< string > mTakes;                // the .femto recordings in bin/data/femto_takes, newest first
     float mTakesListedAt = -100.f;
     float mSettingsSavedAt = -100.f;   // for the "saved" note
@@ -148,6 +163,15 @@ private:
     static const int kStatusPort = 9100;
     void sendStatus();
     ofxOscSender mStatusOut;
+    // The Controller App's page watching cameras' pictures: /view <camera> on kControlPort, every second for each it
+    // watches; each one's colour picture goes to bin/data/camview<camera>.jpg, 24 times a second
+    static const int kControlPort = 9104;
+    ofxOscReceiver mControlIn;
+    std::array< float, kMaxCameras > mViewWantedAt, mViewAt;   // set to long ago in setup()
+    std::array< std::atomic< bool >, kMaxCameras > mViewBusy{};   // its last picture still being written: skip, not queue
+    ofThreadChannel< std::pair< int, ofPixels >> mViewOut;   // to mViewThread, which makes the JPEG and writes it
+    std::thread mViewThread;
+    string mViewDir;
     float mStatusAt = -100.f;
     void stopCamera( Camera& aCam );
     void cameraLoop( Camera& aCam );
@@ -155,6 +179,7 @@ private:
     void wakeOutput();
     void collectCalibration( Camera& aCam, const vector< FemtoSkeleton::Body >& aRefBodies, double aRefTime );
     void drawCameraPanel( Camera& aCam );
+    void beginPanel( const char* aName, const ofRectangle& aArea );
     void drawSettingsWindow( const ofRectangle& aArea );
     void drawCamerasWindow( const ofRectangle& aArea );
     void startCameraByUser( Camera& aCam );
@@ -195,6 +220,7 @@ private:
     ofParameter< bool > bSend;
     ofParameter< int > cameraPort;
     ofParameter< int > colorWidth, colorHeight;
+    ofParameter< bool > autoPlayTakes;      // play the recordings when no camera is found
     ofParameter< bool > useYolo;            // the pose model: YOLO11n-pose (people and 17 keypoints in one pass), else RTMW
 
     // The joined space in 3D: an orbit camera, Z up. Display axes are x right, y away from camera 0, z up.
@@ -202,6 +228,9 @@ private:
     float mViewAz = -110.f, mViewEl = 22.f, mViewDist = 6.f;
     glm::vec3 mViewTarget{ 0.f, 2.5f, -0.8f };
     ofRectangle mViewRect;
+    bool mShowGui = true;     // the controls down the left (h)
+    float mPanelW = 0.f;     // their width, as wide as what is in them (last frame's)
+    float mPanelEvenW = 0.f; // the wider of the two last frame, so both are as wide
     glm::vec2 mTopCentre{ 0.f, 3.f };  // the top-down view's framing (display x, y), eased toward what it must take in
     float mTopHalf = 0.f;
     int mLastMx = 0, mLastMy = 0;

@@ -39,6 +39,8 @@ public:
     void update() override;
     void draw() override;
     void exit() override;
+    void keyPressed( int key ) override;
+    void drawControls();
 
 private:
     enum class Mode { Idle, Recording, Playing };
@@ -56,6 +58,8 @@ private:
     void saveSettings() const;
 
     ofxImGui::Gui gui;
+    bool showGui = true;     // the controls down the left (h)
+    float panelW = 430.f;    // their width, as wide as what is in them (last frame's)
 
     Mode mode = Mode::Idle;
     std::thread worker;

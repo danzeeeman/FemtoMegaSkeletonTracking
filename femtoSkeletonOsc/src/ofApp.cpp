@@ -123,6 +123,27 @@ void ofApp::setup() {
 
     gui.setup();
     optheme::applyImGui();
+    // the Controller App's page asks for a camera's picture (/view <camera>): written as a JPEG off the drawing thread
+    if( !mControlIn.setup( kControlPort )) ofLogWarning( "FemtoSkeletonOsc" ) << "could not listen on port " << kControlPort << ": no camera pictures for the website";
+    mViewDir = ofToDataPath( "", true );
+    mViewWantedAt.fill( -100.f );
+    mViewAt.fill( -100.f );
+    mViewThread = std::thread( [this] {
+        std::pair< int, ofPixels > tv;
+        while( mViewOut.receive( tv )) {
+            ofPixels& px = tv.second;
+            if( px.getNumChannels() != 3 ) px.setNumChannels( 3 );
+            // 640 wide: the page shows every camera side by side
+            if( px.getWidth() > 640 ) px.resize( 640, std::max< size_t >( 1, px.getHeight() * 640 / px.getWidth() ));
+            ofBuffer tjpeg;
+            if( ofSaveImage( px, tjpeg, OF_IMAGE_FORMAT_JPEG, OF_IMAGE_QUALITY_MEDIUM )) {
+                // whole or not at all: the Controller App reads it while this writes the next
+                const string tpath = mViewDir + "/camview" + ofToString( tv.first ) + ".jpg", ttmp = tpath + ".tmp";
+                if( ofBufferToFile( ttmp, tjpeg, true )) std::rename( ttmp.c_str(), tpath.c_str() );
+            }
+            mViewBusy[tv.first] = false;
+        }
+    });
 
     params.setName( "Output" );
     params.add( oscHost.set( "OSC host", "127.0.0.1" ));
@@ -134,6 +155,7 @@ void ofApp::setup() {
     params.add( colorHeight.set( "Colour height (0 fastest)", 0, 0, 2160 ));
     params.add( floorBelow.set( "Floor below camera 0 (m)", 1.5f, 0.f, 5.f ));
     params.add( useYolo.set( "Pose model YOLO11n-pose (else RTMW)", true ));
+    params.add( autoPlayTakes.set( "Play the recordings when no camera is found", true ));
 
     // everything that is kept goes in and out of one file
     mAllParams.setName( "FemtoSkeletonOsc" );
@@ -326,6 +348,15 @@ void ofApp::connectCamera( Camera& aCam ) {
 //--------------------------------------------------------------
 void ofApp::update() {
     if( ofGetElapsedTimef() - mStatusAt >= 1.f ) sendStatus();
+    // the page watching a camera: which, kept up by a /view every second
+    while( mControlIn.hasWaitingMessages() ) {
+        ofxOscMessage tm;
+        mControlIn.getNextMessage( tm );
+        if( tm.getAddress() == "/view" && tm.getNumArgs() >= 1 ) {
+            const int tcam = tm.getArgAsInt( 0 );
+            if( tcam >= 0 && tcam < kMaxCameras ) mViewWantedAt[tcam] = ofGetElapsedTimef();
+        }
+    }
     if( mAutoQuitSec > 0 && ofGetElapsedTimef() > mAutoQuitSec ) {
         size_t tin = 0, tsent = 0;
         for( auto& c : mCams ) tin += c->framesIn;
@@ -355,6 +386,7 @@ void ofApp::update() {
     }
 
     adoptFound();
+    autoPlay();
 
     for( auto& c : mCams ) {
         Camera& cam = *c;
@@ -383,16 +415,34 @@ void ofApp::update() {
                 ofLogNotice( "FemtoSkeletonOsc" ) << "camera " << cam.index << ": Femto " << cam.device.getSerial() << " at " << cam.ip.get()
                                                   << " open, colour " << cam.K.width << "x" << cam.K.height << " fx " << cam.K.fx << " fy " << cam.K.fy;
                 startCamera( cam );
+                cam.failingSince = -1.f;
+                cam.failReported = false;
+            } else {
+                // each failed try is a warning; an error only once it has kept failing (tries a few seconds apart)
+                const float tnow = ofGetElapsedTimef();
+                if( cam.failingSince < 0.f || tnow - cam.lastTry > 15.f ) { cam.failingSince = tnow; cam.failReported = false; }
+                if( !cam.failReported && tnow - cam.failingSince >= kCameraErrorSec ) {
+                    ofLogError( "FemtoSkeletonOsc" ) << "camera " << cam.index << " at " << cam.ip.get() << ": no answer for " << (int)kCameraErrorSec << " s";
+                    cam.failReported = true;
+                }
             }
             cam.lastTry = ofGetElapsedTimef();
         }
         if( !cam.player && !cam.device.isOpen() ) {
-            if( ofGetElapsedTimef() - cam.lastTry > 3.f ) connectCamera( cam );
+            if( mSearching && ofGetElapsedTimef() - cam.lastTry > 3.f ) connectCamera( cam );
             continue;
         }
         // the newest picture, for the texture
         std::lock_guard< std::mutex > tlk( cam.mtx );
         if( cam.shownNew ) {
+            // each camera the page watches, 24 times a second (skipped while the writer is on its last one)
+            const float tnow = ofGetElapsedTimef();
+            const int ti = cam.index;
+            if( ti >= 0 && ti < kMaxCameras && tnow - mViewWantedAt[ti] < 3.f && tnow - mViewAt[ti] >= 1.f / 24.f - 0.004f && !mViewBusy[ti] ) {
+                mViewAt[ti] = tnow;
+                mViewBusy[ti] = true;
+                mViewOut.send( std::make_pair( ti, cam.shown ));
+            }
             if( cam.tex.isAllocated() && ( cam.tex.getWidth() != cam.shown.getWidth() || cam.tex.getHeight() != cam.shown.getHeight() )) cam.tex.clear();
             cam.tex.loadData( cam.shown );
             cam.shownNew = false;
@@ -428,6 +478,56 @@ void ofApp::adoptFound() {
             ofLogNotice( "FemtoSkeletonOsc" ) << "found " << f.name << " " << f.serial << " at " << f.ip << ": camera " << tplace->index;
         }
     }
+}
+
+// No camera for a while: the recordings play as camera 0. A camera found: back to it.
+void ofApp::autoPlay() {
+    if( mDemo || !ofGetEnv( "FEMTO_PLAY" ).empty() ) return;
+    Camera& tcam = *mCams[0];
+    bool tlive = false;
+    for( auto& c : mCams ) tlive = tlive || c->device.isOpen();   // trying an address is not a camera
+    const bool tfound = !mFinder.getFound().empty();
+    if( mAutoPlaying && ( tfound || !autoPlayTakes )) {
+        ofLogNotice( "FemtoSkeletonOsc" ) << ( tfound ? "a camera is found: back to it" : "playing the recordings when no camera is found: off" );
+        stopTake( tcam );
+        mAutoPlaying = false;
+        mNoCameraSince = ofGetElapsedTimef();
+        return;
+    }
+    if( tlive || tfound ) { mNoCameraSince = ofGetElapsedTimef(); return; }
+    if( !autoPlayTakes ) return;
+    // one take over: the next
+    if( mAutoPlaying ) {
+        if( tcam.player && !tcam.player->isFinished() ) return;
+        mAutoTake++;
+    } else {
+        if( tcam.player || ofGetElapsedTimef() - mNoCameraSince < kAutoPlaySec ) return;   // a take chosen by hand, or not long enough
+        mAutoTake = 0;
+    }
+    listTakes();
+    if( mTakes.empty() ) return;
+    const string ttake = mTakes[mAutoTake % mTakes.size()];
+    ofLogNotice( "FemtoSkeletonOsc" ) << "no camera found: playing back " << ttake;
+    if( mSearching ) {
+        // no more looking while the recordings play: nothing more in the log about cameras that are not there
+        mSearching = false;
+        mFinder.stop();
+        ofLogNotice( "FemtoSkeletonOsc" ) << "not looking for cameras while the recordings play (Look for cameras again to)";
+    }
+    tcam.selectedTake = ttake;
+    playTake( tcam, ttake );
+    if( tcam.player ) tcam.player->loop = false;   // to the next when it ends
+    mAutoPlaying = true;
+}
+
+// Back to looking for cameras: the search on again, the recordings stopped, camera 0 tried at once.
+void ofApp::lookForCamerasAgain() {
+    ofLogNotice( "FemtoSkeletonOsc" ) << "looking for cameras again";
+    if( mAutoPlaying ) { stopTake( *mCams[0] ); mAutoPlaying = false; }
+    mSearching = true;
+    mFinder.start( 3.f );
+    mNoCameraSince = ofGetElapsedTimef();
+    for( auto& c : mCams ) c->lastTry = -100.f;
 }
 
 void ofApp::startCameraByUser( Camera& aCam ) {
@@ -828,7 +928,9 @@ void ofApp::draw() {
 
     // the right of the window: each camera with its poses over it, in a row along the top, and the joined
     // space in 3D below, in perspective (orbits with the mouse) and from above
-    ofRectangle tfull( 450, 10, ofGetWidth() - 460, ofGetHeight() - 20 );
+    // right of the controls when they show (as wide as what is in them, last frame's), the whole window when not
+    const float tleft = ( mShowGui ? mPanelW : 0.f ) + 10.f;
+    ofRectangle tfull( tleft, 10, std::max( 1.f, ofGetWidth() - tleft - 10.f ), ofGetHeight() - 20 );
     const bool tcams = !tshown.empty();
     // the 3D views on top, the camera pictures below them: up to four in a row, then more rows
     const int tcols = std::max( 1, std::min( 4, (int)tshown.size() ));
@@ -886,11 +988,15 @@ void ofApp::draw() {
     draw3d( mViewRect, false );
     draw3d( ttop, true );
 
-    // the controls, down the left: the settings above, the cameras below
+    // the controls, against the left: the settings above, the cameras below, each as wide as what is in it (h hides them)
     gui.begin();
-    const float tgap = 10.f, tpanelW = 430.f, tpanelH = ( ofGetHeight() - 3.f * tgap ) * 0.5f;
-    drawSettingsWindow( ofRectangle( tgap, tgap, tpanelW, tpanelH ));
-    drawCamerasWindow( ofRectangle( tgap, 2.f * tgap + tpanelH, tpanelW, tpanelH ));
+    if( mShowGui ) {
+        const float tpanelH = std::floor( ofGetHeight() * 0.5f );
+        mPanelEvenW = mPanelW;   // both as wide as the wider
+        mPanelW = 0.f;
+        drawSettingsWindow( ofRectangle( 0, 0, 0, tpanelH ));
+        drawCamerasWindow( ofRectangle( 0, tpanelH, 0, ofGetHeight() - tpanelH ));
+    }
     gui.end();
 
     // FEMTO_SHOT=<file.png>: save what is on screen after a few seconds, then quit
@@ -898,17 +1004,27 @@ void ofApp::draw() {
     if( !tshot.empty() && ofGetElapsedTimef() > 6.f ) {
         ofImage timg;
         timg.grabScreen( 0, 0, ofGetWidth(), ofGetHeight() );
+        timg.setImageType( OF_IMAGE_COLOR );   // as on screen: the panels' see-through alpha left out
         timg.save( tshot );
         ofExit( 0 );
     }
 }
 
 //--------------------------------------------------------------
-// Output, recording, and how people are found, merged and sent.
-void ofApp::drawSettingsWindow( const ofRectangle& aArea ) {
+// A panel at aArea's place and height, as wide as what is in it; mPanelW keeps the widest, for the views beside them.
+void ofApp::beginPanel( const char* aName, const ofRectangle& aArea ) {
+    guiSettings.lockPosition = true;
     guiSettings.windowPos = aArea.getPosition();
     guiSettings.windowSize = glm::vec2( aArea.width, aArea.height );
-    ofxImGui::BeginWindow( "Settings", guiSettings, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize );
+    ImGui::SetNextWindowSizeConstraints( ImVec2( mPanelEvenW, aArea.height ), ImVec2( FLT_MAX, aArea.height ));
+    ofxImGui::BeginWindow( aName, guiSettings, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_AlwaysAutoResize );
+    mPanelW = std::max( mPanelW, ImGui::GetWindowWidth() );
+}
+
+//--------------------------------------------------------------
+// Output, recording, and how people are found, merged and sent.
+void ofApp::drawSettingsWindow( const ofRectangle& aArea ) {
+    beginPanel( "Settings", aArea );
 
     int tfused = 0;
     size_t tsent = 0;
@@ -956,15 +1072,19 @@ void ofApp::drawSettingsWindow( const ofRectangle& aArea ) {
 // The cameras: what the search found, a section for each camera that is open (live, or playing a recording), a line
 // for each starting or stopped, and a camera to add by its address.
 void ofApp::drawCamerasWindow( const ofRectangle& aArea ) {
-    guiSettings.windowPos = aArea.getPosition();
-    guiSettings.windowSize = glm::vec2( aArea.width, aArea.height );
-    ofxImGui::BeginWindow( "Cameras", guiSettings, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize );
+    beginPanel( "Cameras", aArea );
 
     const auto tfound = mFinder.getFound();
     string tlist;
     for( auto& f : tfound ) tlist += ( tlist.empty() ? "" : ", " ) + f.serial + ( f.ip.empty() ? " (USB)" : " " + f.ip );
     ImGui::PushStyleColor( ImGuiCol_Text, optheme::im( optheme::textMuted ));
     if( mDemo ) ImGui::TextWrapped( "demo: two stand-in cameras, calibrated, watching someone walk a loop and wave" );
+    else if( !mSearching ) {
+        ImGui::TextWrapped( "Not looking for cameras while the recordings play%s", mAutoPlaying ? ( ": playing back " + ofFilePath::getFileName( mCams[0]->selectedTake )).c_str() : "" );
+        ImGui::PopStyleColor();
+        if( ImGui::Button( "Look for cameras again", ImVec2( -1, 0 ))) lookForCamerasAgain();
+        ImGui::PushStyleColor( ImGuiCol_Text, optheme::im( optheme::textMuted ));
+    }
     else if( tfound.empty() ) ImGui::TextWrapped( mFinder.sinceSearch() > 1e8f ? "looking for cameras..." : "no cameras found on the network yet" );
     else ImGui::TextWrapped( "found: %s", tlist.c_str() );
     ImGui::PopStyleColor();
@@ -1116,13 +1236,9 @@ void ofApp::drawCameraPanel( Camera& aCam ) {
             ImGui::SameLine();
             // a calibration takes a walk to make again: the first press asks, a second within 3 s forgets
             const bool tasking = ofGetElapsedTimef() - aCam.forgetAskedAt < 3.f;
-            if( tasking ) {
-                ImGui::PushStyleColor( ImGuiCol_Button, optheme::im( optheme::dangerFill ));
-                ImGui::PushStyleColor( ImGuiCol_ButtonHovered, optheme::im( optheme::dangerFill.getLerped( optheme::text, 0.12f )));
-                ImGui::PushStyleColor( ImGuiCol_Text, optheme::im( optheme::textOn( optheme::dangerFill )));
-            }
+            if( tasking ) optheme::pushOutlined( optheme::danger );
             const bool tforget = ImGui::Button( tasking ? "Really forget?###forget" : "Forget calibration###forget" );
-            if( tasking ) ImGui::PopStyleColor( 3 );
+            if( tasking ) optheme::popOutlined();
             if( tforget ) {
                 if( tasking ) {
                     aCam.calibrated = false;
@@ -1349,7 +1465,8 @@ void ofApp::sendStatus() {
             if( !cam.calibrated ) tproblems.push_back( "camera " + ofToString( cam.index ) + " not calibrated: its people are not sent" );
         }
     }
-    if( topen == 0 ) tproblems.push_back( "no camera open" );
+    if( mAutoPlaying ) tproblems.push_back( "no camera found: playing back " + ofFilePath::getFileName( mCams[0]->selectedTake ));
+    else if( topen == 0 ) tproblems.push_back( "no camera open" );
     if( !bSend ) tproblems.push_back( "sending skeletons is off" );
 
     ofxOscMessage tmsg;
@@ -1360,10 +1477,18 @@ void ofApp::sendStatus() {
     tmsg.addStringArg( ofToString( topen ) + " camera" + ( topen == 1 ? "" : "s" ) + ", " + ofToString( mBodiesSent.load() ) + " bodies sent to "
                        + oscHost.get() + ":" + ofToString( oscPort.get() ));
     mStatusOut.sendMessage( tmsg, false );
+    // the cameras with a picture, for the Controller App's page to choose from
+    ofxOscMessage tcams;
+    tcams.setAddress( "/cameras" );
+    tcams.addStringArg( "femtoSkeletonOsc" );
+    for( auto& c : mCams ) if( c->enabled && ( c->device.isOpen() || c->player || c->fake )) tcams.addIntArg( c->index );
+    mStatusOut.sendMessage( tcams, false );
 }
 
 //--------------------------------------------------------------
 void ofApp::exit() {
+    mViewOut.close();
+    if( mViewThread.joinable() ) mViewThread.join();
     if( !mDemo ) saveSettings();   // the demo's stand-in cameras are not the rig's settings
     mFinder.stop();
     mOutRunning = false;
@@ -1383,4 +1508,5 @@ void ofApp::keyPressed( int key ) {
     if( ImGui::GetIO().WantTextInput ) return;
     if( key == ' ' ) bSend = !bSend;
     if( key == 'r' ) toggleRecording();
+    if( key == 'h' ) mShowGui = !mShowGui;
 }

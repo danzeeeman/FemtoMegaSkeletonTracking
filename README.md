@@ -42,7 +42,7 @@ Clone this repository into `<openFrameworks>/apps/`, so each app sits three fold
 
 | where | what |
 |---|---|
-| **Settings** (top left) | the people being sent, the OSC message count and the frame rate; Output, with **Apply OSC address**, **Floor from feet** and **Save settings**; the **Record** button; Fusion, skeleton, and the pose model's settings |
+| **Settings** (top left, against the edge, as wide as what is in it) | the people being sent, the OSC message count and the frame rate; Output, with **Apply OSC address**, **Floor from feet** and **Save settings**; the **Record** button; Fusion, skeleton, and the pose model's settings |
 | **Cameras** (bottom left) | what the search has found on the network; a section for each open camera; a line for each camera that is connecting or stopped; **add a camera** by its address |
 | **perspective** (top middle) | the joined space in 3D, in camera 0's frame. Drag to orbit, wheel to zoom |
 | **from above** (top right) | the same from above, 1 m grid. It zooms out by itself to keep every calibrated camera in view |
@@ -56,6 +56,7 @@ On / off settings are toggle buttons: blue and ending in "on" when on, plain and
 |---|---|
 | `space` | sending skeletons on / off |
 | `r` | record every camera / stop |
+| `h` | the Settings and Cameras windows hidden / shown (the views take the whole window) |
 
 ### One camera
 
@@ -358,6 +359,7 @@ Records the OSC that femtoSkeletonOsc sends and plays it back later with its tim
   - from above (the sensor at the bottom, its field of view drawn in);
   - each person in a colour of their own, left side blue, right side red, with their id and distance.
 - **Settings** are kept in `bin/data/settings.json`.
+- **`h`** hides the controls (the views take the whole window), and shows them again.
 - **`OSCREC_SHOT=<file.png>`** plays the newest take, saves a screenshot after 6 s and quits.
 
 ## Troubleshooting
