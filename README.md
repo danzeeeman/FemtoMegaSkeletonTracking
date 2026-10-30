@@ -27,7 +27,7 @@ Two openFrameworks apps for tracking people with Orbbec Femto Mega depth cameras
 
 Clone this repository into `<openFrameworks>/apps/`, so each app sits three folders below openFrameworks.
 
-1. **Addons.** `./get_addons.sh` clones the addons into `<openFrameworks>/addons`: ofxImGui, ofxOnnx, ofxOrbbec, ofxYoloPose and ofxRtmPoseTracker.
+1. **Addons.** `./get_addons.sh` clones the addons into `<openFrameworks>/addons`: ofxImGui, ofxOnnx, ofxOrbbec, ofxYoloPose, ofxRtmPoseTracker and ofxSyphon.
    - Pass `--update` to pull the ones you already have.
    - On macOS it also runs ofxOrbbec's `scripts/install_sdk.sh`, which fetches the Orbbec SDK (v2.10.6).
    - ofxOpenCv, ofxOsc and ofxNetwork come with openFrameworks.

@@ -14,6 +14,7 @@ repos=(
     "ofxOrbbec      git@github.com:danzeeeman/ofxOrbbec.git"
     "ofxYoloPose    git@github.com:danzeeeman/ofxYoloPose.git"
     "ofxRtmPoseTracker git@github.com:danzeeeman/ofxRtmPoseTracker.git"
+    "ofxSyphon      https://github.com/astellato/ofxSyphon.git"   # femtoSkeletonOsc's camera feeds (macOS; nothing elsewhere)
 )
 
 for entry in "${repos[@]}"; do
